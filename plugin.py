@@ -1,6 +1,7 @@
 import random
 import re
 import os
+import json
 import tomllib  # Python 3.11+ 内置，若版本低可替换为 toml 库
 from typing import List, Tuple, Type, Any, Optional, Dict
 from src.plugin_system import (
@@ -18,6 +19,62 @@ from src.plugin_system import (
 from src.common.logger import get_logger
 
 logger = get_logger("coc_dice_plugin")
+
+# ===================== 角色数据持久化存储 =====================
+# 角色数据存储文件路径（插件目录下的character_data.json）
+CHAR_DATA_PATH = os.path.join(os.path.dirname(__file__), "character_data.json")
+
+def load_character_data() -> Dict[str, Dict[str, int]]:
+    """
+    加载用户角色数据（持久化存储）
+    Returns:
+        {用户ID: {角色属性字典}}
+    """
+    try:
+        if os.path.exists(CHAR_DATA_PATH):
+            with open(CHAR_DATA_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return {}
+    except Exception as e:
+        logger.error(f"加载角色数据失败，使用空数据：{e}")
+        return {}
+
+def save_character_data(char_data: Dict[str, Dict[str, int]]) -> bool:
+    """
+    保存用户角色数据到文件（持久化）
+    Args:
+        char_data: 用户角色数据字典
+    Returns:
+        是否保存成功
+    """
+    try:
+        # 确保目录存在
+        os.makedirs(os.path.dirname(__file__), exist_ok=True)
+        with open(CHAR_DATA_PATH, "w", encoding="utf-8") as f:
+            json.dump(char_data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"保存角色数据失败：{e}")
+        return False
+
+# 全局角色数据（运行时缓存，启动时加载，修改时保存）
+USER_CHARACTER_DATA = load_character_data()
+
+# ===================== 新增：属性指令映射字典 =====================
+# 指令名 -> (属性缩写, 属性全称)
+ATTR_COMMAND_MAP = {
+    "力量": ("STR", "力量(STR)"),
+    "体质": ("CON", "体质(CON)"),
+    "体型": ("SIZ", "体型(SIZ)"),
+    "敏捷": ("DEX", "敏捷(DEX)"),
+    "外貌": ("APP", "外貌(APP)"),
+    "智力": ("INT", "智力(INT)"),
+    "意志": ("POW", "意志(POW)"),
+    "教育": ("EDU", "教育(EDU)"),
+    "幸运": ("LUCK", "幸运(LUCK)")
+}
+# 生成属性指令列表（用于匹配和提示）
+VALID_ATTR_COMMANDS = list(ATTR_COMMAND_MAP.keys())
 
 # ===================== 配置文件相关（热重载） =====================
 def get_plugin_config() -> Dict[str, Any]:
@@ -48,11 +105,16 @@ def get_plugin_config() -> Dict[str, Any]:
             # 检定命令默认模板
             "check_template": """🎲 克苏鲁检定（阈值：{阈值}）
 投掷结果：{投掷结果}
+{判定结果}""",
+            # 新增：属性检定专用模板
+            "attr_check_template": """🎲 {属性全称}检定（阈值：{阈值}）
+你的{属性全称}属性值：{阈值}
+投掷结果：{投掷结果}
 {判定结果}"""
         },
         "character": {
             # 角色创建默认模板
-            "output_template": """🎭 随机生成跑团角色基础属性：
+            "output_template": """🎭 随机生成跑团基础属性：
 
 🔹 力量(STR)：{STR}
 🔹 体质(CON)：{CON}
@@ -64,7 +126,23 @@ def get_plugin_config() -> Dict[str, Any]:
 🔹 教育(EDU)：{EDU}
 🔹 幸运(LUCK)：{LUCK}
 
-📊 属性总值：{总属性}"""
+📊 属性总值：{总属性}""",
+            # 角色查询默认模板
+            "query_template": """🎭 你的绑定角色属性：
+
+🔹 力量(STR)：{STR}
+🔹 体质(CON)：{CON}
+🔹 体型(SIZ)：{SIZ}
+🔹 敏捷(DEX)：{DEX}
+🔹 外貌(APP)：{APP}
+🔹 智力(INT)：{INT}
+🔹 意志(POW)：{POW}
+🔹 教育(EDU)：{EDU}
+🔹 幸运(LUCK)：{LUCK}
+
+📊 属性总值：{总属性}
+💡 提示：发送「/创建角色」可重新生成并覆盖当前角色
+💡 支持指令：/{力量}/{体质}/{体型}/{敏捷}/{外貌}/{智力}/{意志}/{教育}/{幸运}（自动检定对应属性）"""
         }
     }
 
@@ -93,7 +171,7 @@ def render_template(template: str, data: Dict[str, Any]) -> str:
         渲染后的字符串
     """
     try:
-        return template.format(**data)
+        return template.format(** data)
     except KeyError as e:
         logger.warning(f"模板中包含未定义的变量：{e}")
         # 降级替换：只替换存在的变量，保留不存在的变量格式
@@ -236,48 +314,151 @@ class CoCDiceTool(BaseTool):
             await self.send_text(error_msg)
             return {"name": self.name, "content": error_msg}
 
-# ===================== 核心命令（/掷骰 /检定 /创建角色） =====================
+# ===================== 核心命令（/掷骰 /检定 /创建角色 /查询角色 /属性检定） =====================
 class CoCDiceCommand(BaseCommand):
-    """CoC骰子命令 - 响应中文指令：/掷骰 [骰子类型] /检定 [检定阈值] /创建角色"""
+    """CoC骰子命令 - 响应中文指令：/掷骰 /检定 /创建角色 /查询角色 /属性检定"""
 
     command_name = "coc_dice_command"
-    command_description = """克苏鲁骰子投掷/检定/角色创建（支持配置文件自定义输出模板）
+    command_description = f"""克苏鲁骰子投掷/检定/角色创建/角色查询（支持角色绑定+持久化）
 用法：
 1. /掷骰 1d100（投掷任意骰子）
 2. /检定 70（D100检定，阈值70）
-3. /创建角色（随机生成跑团基础属性，公式3D6×5）"""
-    # 匹配/掷骰 /检定 /创建角色命令
-    command_pattern = r"^/(掷骰|检定|创建角色)(\s+.*)?$"
+3. /创建角色（随机生成跑团基础属性并绑定到当前账号）
+4. /查询角色（查看已绑定的角色属性）
+5. /属性名（自动用绑定角色的对应属性检定，支持：{', '.join(VALID_ATTR_COMMANDS)}）
+   示例：/力量 → 用你的力量属性值做D100检定"""
+    # 扩展命令匹配规则：支持/属性名指令
+    command_pattern = rf"^/(掷骰|检定|创建角色|查询角色|{'|'.join(VALID_ATTR_COMMANDS)})(\s+.*)?$"
 
     async def execute(self) -> Tuple[bool, str, bool]:
         """执行中文骰子指令（主动发送结果到聊天）"""
-        # 提取指令参数（去除指令前缀）
+        # ========== global声明前置 ==========
+        global USER_CHARACTER_DATA
+        
+        # ========== 提取用户ID ==========
+        user_id = None
+        try:
+            # 按指定路径提取用户ID：self.message.message_info.user_info.user_id
+            if (hasattr(self.message, 'message_info') and 
+                hasattr(self.message.message_info, 'user_info') and 
+                hasattr(self.message.message_info.user_info, 'user_id')):
+                user_id = str(self.message.message_info.user_info.user_id)
+                logger.info(f"成功提取用户ID：{user_id}（路径：self.message.message_info.user_info.user_id）")
+            else:
+                logger.error("无法提取用户ID：缺失以下属性层级")
+                logger.error(f"- self.message是否有message_info：{hasattr(self.message, 'message_info')}")
+                if hasattr(self.message, 'message_info'):
+                    logger.error(f"- self.message.message_info是否有user_info：{hasattr(self.message.message_info, 'user_info')}")
+                if hasattr(self.message, 'message_info') and hasattr(self.message.message_info, 'user_info'):
+                    logger.error(f"- self.message.message_info.user_info是否有user_id：{hasattr(self.message.message_info.user_info, 'user_id')}")
+        except Exception as e:
+            logger.error(f"提取用户ID时出错：{e}")
+        
+        # 检查用户ID是否获取成功
+        if not user_id:
+            error_msg = "❌ 无法获取你的用户ID，无法绑定/查询角色！"
+            await self.send_text(error_msg)
+            return False, error_msg, True
+        
+        # 提取指令前缀和参数
         raw_params = self.message.raw_message.strip()
-        # 识别指令前缀
-        if "创建角色" in raw_params:
-            cmd_prefix = "/创建角色"
-        elif "检定" in raw_params:
-            cmd_prefix = "/检定"
-        else:
-            cmd_prefix = "/掷骰"
+        cmd_prefix = None
+        # 识别属性检定指令（优先级最高）
+        for attr_name in VALID_ATTR_COMMANDS:
+            if raw_params.startswith(f"/{attr_name}"):
+                cmd_prefix = f"/{attr_name}"
+                break
+        # 识别原有指令
+        if not cmd_prefix:
+            if "创建角色" in raw_params:
+                cmd_prefix = "/创建角色"
+            elif "查询角色" in raw_params:
+                cmd_prefix = "/查询角色"
+            elif "检定" in raw_params:
+                cmd_prefix = "/检定"
+            else:
+                cmd_prefix = "/掷骰"
         
         params = raw_params[len(cmd_prefix):].strip()
-        # 读取配置（热重载）
         config = get_plugin_config()
         
-        # 处理「/创建角色」指令（无参数）
-        if cmd_prefix == "/创建角色":
+        # ========== 新增：处理属性检定指令（/力量、/体质等） ==========
+        attr_name = cmd_prefix.lstrip("/")  # 提取属性名（如/力量 → 力量）
+        if attr_name in VALID_ATTR_COMMANDS:
+            # 校验参数（属性检定指令不允许带参数）
             if params:
-                error_msg = "❌ /创建角色命令无需参数！直接发送「/创建角色」即可生成随机属性"
+                error_msg = f"❌ /{attr_name}命令无需参数！直接发送「/{attr_name}」即可用你的{attr_name}属性检定。"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            # 校验用户是否绑定角色
+            if user_id not in USER_CHARACTER_DATA:
+                error_msg = f"❌ 你还未绑定任何角色！发送「/创建角色」生成角色后，才能使用「/{attr_name}」指令检定。"
                 await self.send_text(error_msg)
                 return False, error_msg, True
             
             try:
-                # 1. 生成角色属性
+                # 1. 获取属性映射（如力量 → (STR, 力量(STR))）
+                attr_short, attr_full = ATTR_COMMAND_MAP[attr_name]
+                # 2. 获取用户绑定角色的该属性值
+                attr_value = USER_CHARACTER_DATA[user_id][attr_short]
+                # 3. 校验属性值有效性
+                if not isinstance(attr_value, int) or attr_value < 1 or attr_value > 100:
+                    error_msg = f"❌ 你的{attr_full}属性值异常（{attr_value}），无法检定！"
+                    await self.send_text(error_msg)
+                    return False, error_msg, True
+                
+                # 4. 执行D100检定
+                rolls, total = roll_dice(1, 100)
+                success_thresh = config["dice"]["success_threshold"]
+                fail_thresh = config["dice"]["fail_threshold"]
+                
+                # 5. 判定结果
+                if total <= success_thresh:
+                    judge_result = "✨ 大成功！"
+                elif total <= attr_value:
+                    judge_result = "✅ 检定成功！"
+                elif total >= fail_thresh:
+                    judge_result = "💥 大失败！"
+                else:
+                    judge_result = "❌ 检定失败！"
+                
+                # 6. 组装检定数据（用于模板渲染）
+                check_data = {
+                    "属性全称": attr_full,
+                    "阈值": attr_value,
+                    "投掷结果": total,
+                    "判定结果": judge_result.strip()
+                }
+                
+                # 7. 渲染属性检定专用模板
+                attr_check_template = config["dice"]["attr_check_template"]
+                msg = render_template(attr_check_template, check_data)
+                
+                await self.send_text(msg)
+                return True, msg, True
+            
+            except Exception as e:
+                logger.error(f"{attr_name}属性检定失败：{e}", exc_info=True)
+                error_msg = f"❌ {attr_name}属性检定出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+        
+        # ========== 原有指令逻辑（保持不变） ==========
+        # 处理「/创建角色」指令
+        elif cmd_prefix == "/创建角色":
+            if params:
+                error_msg = "❌ /创建角色命令无需参数！直接发送「/创建角色」即可生成并绑定随机属性"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
                 attr_data = generate_character_attributes()
-                # 2. 获取模板并渲染
+                USER_CHARACTER_DATA[user_id] = attr_data
+                save_character_data(USER_CHARACTER_DATA)
                 char_template = config["character"]["output_template"]
                 role_msg = render_template(char_template, attr_data)
+                role_msg += "\n\n✅ 角色已成功绑定到你的账号！发送「/查询角色」可查看，支持/{力量}/{体质}等指令自动检定。"
                 
                 await self.send_text(role_msg)
                 return True, role_msg, True
@@ -285,6 +466,32 @@ class CoCDiceCommand(BaseCommand):
             except Exception as e:
                 logger.error(f"创建角色失败：{e}", exc_info=True)
                 error_msg = f"❌ 创建角色出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+        
+        # 处理「/查询角色」指令
+        elif cmd_prefix == "/查询角色":
+            if params:
+                error_msg = "❌ /查询角色命令无需参数！直接发送「/查询角色」即可查看绑定角色"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            if user_id not in USER_CHARACTER_DATA:
+                error_msg = "❌ 你还未绑定任何角色！发送「/创建角色」可生成并绑定角色。"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                attr_data = USER_CHARACTER_DATA[user_id]
+                query_template = config["character"]["query_template"]
+                query_msg = render_template(query_template, attr_data)
+                
+                await self.send_text(query_msg)
+                return True, query_msg, True
+            
+            except Exception as e:
+                logger.error(f"查询角色失败：{e}", exc_info=True)
+                error_msg = f"❌ 查询角色出错：{str(e)}"
                 await self.send_text(error_msg)
                 return False, error_msg, True
         
@@ -307,9 +514,7 @@ class CoCDiceCommand(BaseCommand):
                     await self.send_text(error_msg)
                     return False, error_msg, True
                 
-                # 1. 投掷D100
                 rolls, total = roll_dice(1, 100)
-                # 2. 判定结果
                 success_thresh = config["dice"]["success_threshold"]
                 fail_thresh = config["dice"]["fail_threshold"]
                 
@@ -322,14 +527,12 @@ class CoCDiceCommand(BaseCommand):
                 else:
                     judge_result = "❌ 检定失败！"
                 
-                # 3. 组装检定数据（用于模板渲染）
                 check_data = {
                     "阈值": check_threshold,
                     "投掷结果": total,
                     "判定结果": judge_result.strip()
                 }
                 
-                # 4. 渲染模板
                 check_template = config["dice"]["check_template"]
                 msg = render_template(check_template, check_data)
                 
@@ -350,17 +553,14 @@ class CoCDiceCommand(BaseCommand):
                 return False, error_msg, True
             
             try:
-                # 1. 解析并投掷骰子
                 count, face, modifier = parse_dice_expression(params)
                 rolls, total = roll_dice(count, face, modifier)
                 
-                # 2. 组装掷骰数据（用于模板渲染）
                 roll_detail = " + ".join(map(str, rolls))
                 modifier_str = f"{'+' if modifier > 0 else '-'}{abs(modifier)}" if modifier != 0 else "无"
                 success_thresh = config["dice"]["success_threshold"]
                 fail_thresh = config["dice"]["fail_threshold"]
                 
-                # 判定结果（仅1d100生效）
                 judge_result = ""
                 if face == 100 and count == 1:
                     if total <= success_thresh:
@@ -368,7 +568,6 @@ class CoCDiceCommand(BaseCommand):
                     elif total >= fail_thresh:
                         judge_result = "💥 大失败！"
                 
-                # 3. 组装模板数据
                 roll_data = {
                     "表达式": params,
                     "单次结果": roll_detail,
@@ -377,7 +576,6 @@ class CoCDiceCommand(BaseCommand):
                     "判定结果": judge_result.strip()
                 }
                 
-                # 4. 渲染模板
                 roll_template = config["dice"]["roll_template"]
                 msg = render_template(roll_template, roll_data)
                 
@@ -452,10 +650,10 @@ class CoCDiceEventHandler(BaseEventHandler):
         
         return True, True, None, None, None
 
-# ===================== 插件注册 =====================
+# ===================== 插件注册（配置文件为config.toml） =====================
 @register_plugin
 class CoCDicePlugin(BasePlugin):
-    """CoC骰子插件 - 克苏鲁跑团专用骰子工具（全命令支持自定义模板+热重载）"""
+    """CoC骰子插件 - 克苏鲁跑团专用骰子工具（角色绑定+持久化+属性自动检定）"""
 
     # 插件基本信息
     plugin_name: str = "coc_dice_plugin"
@@ -468,7 +666,7 @@ class CoCDicePlugin(BasePlugin):
     config_section_descriptions = {
         "plugin": "插件基础配置",
         "dice": "骰子/检定相关配置（含自定义模板）",
-        "character": "角色创建模板配置"
+        "character": "角色创建/查询模板配置"
     }
 
     config_schema: dict = {
@@ -496,12 +694,20 @@ class CoCDicePlugin(BasePlugin):
 投掷结果：{投掷结果}
 {判定结果}""",
                 description="检定命令输出模板，支持变量：{阈值}/{投掷结果}/{判定结果}"
+            ),
+            "attr_check_template": ConfigField(
+                type=str,
+                default="""🎲 {属性全称}检定（阈值：{阈值}）
+你的{属性全称}属性值：{阈值}
+投掷结果：{投掷结果}
+{判定结果}""",
+                description="属性检定专用模板，支持变量：{属性全称}/{阈值}/{投掷结果}/{判定结果}"
             )
         },
         "character": {
             "output_template": ConfigField(
                 type=str,
-                default="""🎭 您的角色基础属性为：
+                default="""🎭 随机生成跑团基础属性：
 
 🔹 力量(STR)：{STR}
 🔹 体质(CON)：{CON}
@@ -514,7 +720,26 @@ class CoCDicePlugin(BasePlugin):
 🔹 幸运(LUCK)：{LUCK}
 
 📊 属性总值：{总属性}""",
-                description="角色属性输出模板，支持变量：{STR}/{CON}/{SIZ}/{DEX}/{APP}/{INT}/{POW}/{EDU}/{LUCK}/{总属性}"
+                description="角色创建输出模板，支持变量：{STR}/{CON}/{SIZ}/{DEX}/{APP}/{INT}/{POW}/{EDU}/{LUCK}/{总属性}"
+            ),
+            "query_template": ConfigField(
+                type=str,
+                default="""🎭 你的绑定角色属性：
+
+🔹 力量(STR)：{STR}
+🔹 体质(CON)：{CON}
+🔹 体型(SIZ)：{SIZ}
+🔹 敏捷(DEX)：{DEX}
+🔹 外貌(APP)：{APP}
+🔹 智力(INT)：{INT}
+🔹 意志(POW)：{POW}
+🔹 教育(EDU)：{EDU}
+🔹 幸运(LUCK)：{LUCK}
+
+📊 属性总值：{总属性}
+💡 提示：发送「/创建角色」可重新生成并覆盖当前角色
+💡 支持指令：/{力量}/{体质}/{体型}/{敏捷}/{外貌}/{智力}/{意志}/{教育}/{幸运}（自动检定对应属性）""",
+                description="角色查询输出模板，支持变量：{STR}/{CON}/{SIZ}/{DEX}/{APP}/{INT}/{POW}/{EDU}/{LUCK}/{总属性}"
             )
         }
     }
@@ -526,3 +751,9 @@ class CoCDicePlugin(BasePlugin):
             (CoCDiceCommand.get_command_info(), CoCDiceCommand),
             (CoCDiceEventHandler.get_handler_info(), CoCDiceEventHandler),
         ]
+    
+    def on_plugin_stop(self):
+        """插件停止时保存角色数据（防止数据丢失）"""
+        global USER_CHARACTER_DATA
+        save_character_data(USER_CHARACTER_DATA)
+        logger.info("插件停止，已保存角色数据")
