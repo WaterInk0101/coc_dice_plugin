@@ -118,7 +118,10 @@ def get_plugin_config() -> Dict[str, Any]:
             "skill_query_template": """🎭 你的角色技能列表：
 {技能列表}
 📊 技能总数：{skill_count}
-💡 发送「/查询角色」查看属性，/rd [技能名] 可检定技能"""
+💡 发送「/查询角色」查看属性，/rd [技能名] 可检定技能""",
+            "single_skill_template": """🎭 角色技能/属性查询结果：
+🔹 {skill_name}：{skill_value}
+💡 发送「/查询技能」查看所有技能，/rd {skill_name} 可检定该技能/属性"""
         },
         "import_attr": {
             "success_template": """✅ 角色属性修改/新增成功！
@@ -374,6 +377,36 @@ def get_character_skills(char_data: Dict[str, int]) -> Tuple[List[str], int]:
     
     return skill_lines, len(skill_lines)
 
+# ===================== 获取单个技能/属性值 =====================
+def get_single_skill_value(skill_name: str, char_data: Dict[str, int]) -> Tuple[bool, str, Any]:
+    """
+    获取单个技能/属性的值
+    :param skill_name: 技能/属性名
+    :param char_data: 角色数据
+    :return: (是否存在, 显示名称, 值)
+    """
+    # 1. 检查基础属性
+    if skill_name in BASE_ATTR_NAMES:
+        short_name = BASE_ATTR_TO_SHORT[skill_name]
+        value = char_data.get(short_name, 0)
+        full_name = BASE_ATTR_MAP[skill_name][1]
+        return True, full_name, value
+    
+    # 2. 检查衍生属性
+    if skill_name in DERIVED_ATTRS:
+        value = get_derived_attr_value(skill_name, char_data)
+        full_name = DERIVED_ATTRS[skill_name]
+        return True, full_name, value
+    
+    # 3. 检查自定义技能
+    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"])
+    if skill_name in char_data and skill_name not in exclude_keys and skill_name not in DERIVED_ATTRS:
+        value = char_data[skill_name]
+        return True, skill_name, value
+    
+    # 4. 未找到
+    return False, skill_name, None
+
 # ===================== 删除属性/角色核心函数 =====================
 def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str, Dict[str, int]]:
     """删除/重置角色属性/技能"""
@@ -490,6 +523,7 @@ class CoCDiceCommand(BaseCommand):
 3. /创建角色 → 生成预设基础属性（含HP/MP/SAN）
 4. /查询角色 → 查看所有属性（基础属性+衍生属性）
 5. /查询技能 → 查看所有自定义技能（非属性项）
+   /查询技能 [属性/技能名] → 单独查看指定技能/属性的值（如/查询技能 感知、/查询技能 闪避）
 6. /st/导入 [属性数值] → 新增/修改属性/技能（无=格式，如/st 力量80 感知75）
 7. /删除/ del [属性/技能名] → 删除/重置属性/技能
    - 基础属性：重置为默认值（如/删除 力量）
@@ -825,13 +859,11 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 7. 处理/查询技能指令 ==========
+        # ========== 7. 处理/查询技能指令（新增单个查询逻辑） ==========
         elif cmd_prefix == "查询技能":
-            if params:
-                error_msg = "❌ /查询技能命令无需参数！"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-
+            skill_name = params.strip()
+            
+            # 检查是否创建角色
             if user_id not in USER_CHARACTER_DATA:
                 error_msg = "❌ 你还未创建角色！可发送/创建角色或/st指令自动创建。"
                 await self.send_text(error_msg)
@@ -839,20 +871,38 @@ class CoCDiceCommand(BaseCommand):
 
             try:
                 char_data = USER_CHARACTER_DATA[user_id]
-                skill_lines, skill_count = get_character_skills(char_data)
                 
-                if not skill_lines:
-                    skill_list = "暂无自定义技能（可通过/st指令添加，如/st 感知80 魅力75）"
+                # 有参数：查询单个技能/属性
+                if skill_name:
+                    exists, show_name, value = get_single_skill_value(skill_name, char_data)
+                    if exists:
+                        single_skill_data = {
+                            "skill_name": show_name,
+                            "skill_value": value
+                        }
+                        single_msg = render_template(config["character"]["single_skill_template"], single_skill_data)
+                        await self.send_text(single_msg)
+                        return True, single_msg, True
+                    else:
+                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                # 无参数：查询所有技能
                 else:
-                    skill_list = "\n".join(skill_lines)
+                    skill_lines, skill_count = get_character_skills(char_data)
+                    
+                    if not skill_lines:
+                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 感知80 魅力75）"
+                    else:
+                        skill_list = "\n".join(skill_lines)
 
-                skill_data = {
-                    "技能列表": skill_list,
-                    "skill_count": skill_count
-                }
-                skill_msg = render_template(config["character"]["skill_query_template"], skill_data)
-                await self.send_text(skill_msg)
-                return True, skill_msg, True
+                    skill_data = {
+                        "技能列表": skill_list,
+                        "skill_count": skill_count
+                    }
+                    skill_msg = render_template(config["character"]["skill_query_template"], skill_data)
+                    await self.send_text(skill_msg)
+                    return True, skill_msg, True
 
             except Exception as e:
                 error_msg = f"❌ 查询技能出错：{str(e)}"
@@ -943,7 +993,8 @@ class CoCDicePlugin(BasePlugin):
         "character": {
             "output_template": ConfigField(type=str, default=get_plugin_config()["character"]["output_template"], description="创建角色模板"),
             "query_template": ConfigField(type=str, default=get_plugin_config()["character"]["query_template"], description="查询角色模板"),
-            "skill_query_template": ConfigField(type=str, default=get_plugin_config()["character"]["skill_query_template"], description="查询技能模板")
+            "skill_query_template": ConfigField(type=str, default=get_plugin_config()["character"]["skill_query_template"], description="查询技能模板"),
+            "single_skill_template": ConfigField(type=str, default=get_plugin_config()["character"]["single_skill_template"], description="单个技能查询模板")
         },
         "import_attr": {
             "success_template": ConfigField(type=str, default=get_plugin_config()["import_attr"]["success_template"], description="导入成功模板"),
