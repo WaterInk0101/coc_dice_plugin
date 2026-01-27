@@ -21,34 +21,22 @@ from src.common.logger import get_logger
 logger = get_logger("coc_dice_plugin")
 
 # ===================== 角色数据持久化存储 =====================
-# 角色数据存储文件路径（插件目录下的character_data.json）
 CHAR_DATA_PATH = os.path.join(os.path.dirname(__file__), "character_data.json")
 
 def load_character_data() -> Dict[str, Dict[str, int]]:
-    """
-    加载用户角色数据（持久化存储）
-    Returns:
-        {用户ID: {角色属性字典}}
-    """
+    """加载用户角色数据（持久化）"""
     try:
         if os.path.exists(CHAR_DATA_PATH):
             with open(CHAR_DATA_PATH, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {}
     except Exception as e:
-        logger.error(f"加载角色数据失败，使用空数据：{e}")
+        logger.error(f"加载角色数据失败：{e}")
         return {}
 
 def save_character_data(char_data: Dict[str, Dict[str, int]]) -> bool:
-    """
-    保存用户角色数据到文件（持久化）
-    Args:
-        char_data: 用户角色数据字典
-    Returns:
-        是否保存成功
-    """
+    """保存用户角色数据（持久化）"""
     try:
-        # 确保目录存在
         os.makedirs(os.path.dirname(__file__), exist_ok=True)
         with open(CHAR_DATA_PATH, "w", encoding="utf-8") as f:
             json.dump(char_data, f, ensure_ascii=False, indent=2)
@@ -57,12 +45,10 @@ def save_character_data(char_data: Dict[str, Dict[str, int]]) -> bool:
         logger.error(f"保存角色数据失败：{e}")
         return False
 
-# 全局角色数据（运行时缓存，启动时加载，修改时保存）
 USER_CHARACTER_DATA = load_character_data()
 
-# ===================== 属性指令映射字典 =====================
-# 指令名 -> (属性缩写, 属性全称)
-ATTR_COMMAND_MAP = {
+# ===================== 预设属性映射（兼容原有功能） =====================
+PRESET_ATTR_MAP = {
     "力量": ("STR", "力量(STR)"),
     "体质": ("CON", "体质(CON)"),
     "体型": ("SIZ", "体型(SIZ)"),
@@ -73,115 +59,88 @@ ATTR_COMMAND_MAP = {
     "教育": ("EDU", "教育(EDU)"),
     "幸运": ("LUCK", "幸运(LUCK)")
 }
-# 生成属性指令列表（用于匹配和提示）
-VALID_ATTR_COMMANDS = list(ATTR_COMMAND_MAP.keys())
-# 属性名称反向映射（用于解析/st指令）：属性名 -> 缩写
-ATTR_NAME_TO_SHORT = {name: short for name, (short, full) in ATTR_COMMAND_MAP.items()}
-# 合法属性名称集合
-VALID_ATTR_NAMES = set(ATTR_NAME_TO_SHORT.keys())
+PRESET_ATTR_NAMES = set(PRESET_ATTR_MAP.keys())
+PRESET_ATTR_TO_SHORT = {name: short for name, (short, full) in PRESET_ATTR_MAP.items()}
+SHORT_TO_PRESET_ATTR = {short: name for name, (short, full) in PRESET_ATTR_MAP.items()}
 
 # ===================== 快捷指令映射 =====================
 SHORT_CMD_MAP = {
     "r": "掷骰",
     "rd": "检定",
-    "st": "导入"  # /st 等同于 /导入
+    "st": "导入",
+    "del": "删除",       
+    "del_all": "删除角色"
 }
 
-# ===================== 配置文件相关（热重载） =====================
+# ===================== 配置文件相关 =====================
 def get_plugin_config() -> Dict[str, Any]:
-    """
-    读取配置文件（每次调用都重新读取，实现热重载）
-    Returns:
-        配置字典，包含所有模板配置项
-    """
-    # 配置文件路径（与插件同目录的config.toml）
+    """读取配置文件（热重载）"""
     config_path = os.path.join(os.path.dirname(__file__), "config.toml")
-    # 完整默认配置（包含角色、掷骰、检定模板）
     default_config = {
-        "plugin": {
-            "config_version": "1.0.0",
-            "enabled": True
-        },
+        "plugin": {"config_version": "1.0.0", "enabled": True},
         "dice": {
             "show_detail": True,
             "success_threshold": 5,
             "fail_threshold": 96,
             "default_message": "🎲 克苏鲁骰子投掷完成！",
-            # 掷骰命令默认模板（新增原因字段）
             "roll_template": """🎲 投掷「{表达式}」结果：
 {原因说明}
 单次结果：{单次结果}
 修正值：{修正值}
 总计：{总计}
 {判定结果}""",
-            # 检定命令默认模板（新增原因字段）
             "check_template": """🎲 克苏鲁检定（阈值：{阈值}）
 {原因说明}
-投掷结果：{投掷结果}
-{判定结果}""",
-            # 属性检定专用模板
-            "attr_check_template": """🎲 {属性全称}检定（阈值：{阈值}）
-你的{属性全称}属性值：{阈值}
 投掷结果：{投掷结果}
 {判定结果}"""
         },
         "character": {
-            # 角色创建默认模板
             "output_template": """🎭 随机生成跑团基础属性：
-
-🔹 力量(STR)：{STR}
-🔹 体质(CON)：{CON}
-🔹 体型(SIZ)：{SIZ}
-🔹 敏捷(DEX)：{DEX}
-🔹 外貌(APP)：{APP}
-🔹 智力(INT)：{INT}
-🔹 意志(POW)：{POW}
-🔹 教育(EDU)：{EDU}
-🔹 幸运(LUCK)：{LUCK}
-
-📊 属性总值：{总属性}""",
-            # 角色查询默认模板
+{属性列表}
+📊 预设属性总值：{总属性}
+💡 支持导入自定义属性（如/导入 感知80 魅力75）""",
             "query_template": """🎭 你的绑定角色属性：
-
-🔹 力量(STR)：{STR}
-🔹 体质(CON)：{CON}
-🔹 体型(SIZ)：{SIZ}
-🔹 敏捷(DEX)：{DEX}
-🔹 外貌(APP)：{APP}
-🔹 智力(INT)：{INT}
-🔹 意志(POW)：{POW}
-🔹 教育(EDU)：{EDU}
-🔹 幸运(LUCK)：{LUCK}
-
-📊 属性总值：{总属性}
-💡 提示：发送「/创建角色」可重新生成并覆盖当前角色
-💡 支持指令：/{力量}/{体质}/{体型}/{敏捷}/{外貌}/{智力}/{意志}/{教育}/{幸运}（自动检定对应属性）
-💡 快捷指令：/r [表达式] [原因] = /掷骰、/rd [阈值] [原因] = /检定
-💡 属性修改：/st [属性值] 或 /导入 [属性值]（支持多属性，如：/st 力量80 体质75）"""
+{预设属性列表}
+{自定义属性列表}
+📊 预设属性总值：{预设总属性}
+📊 所有属性总数：{属性总数}
+💡 提示：/rd [属性名] 可检定任意属性（如/rd 力量、/rd 感知）"""
         },
-        # 新增：属性导入模板
         "import_attr": {
-            "success_template": """✅ 角色属性修改成功！
+            "success_template": """✅ 角色属性修改/新增成功！
 {自动创建提示}
-修改的属性：
+修改/新增的属性：
 {修改列表}
-当前角色属性总值：{总属性}
-💡 发送「/查询角色」查看完整属性""",
-            "auto_create_tip": "🔔 检测到你未创建角色，已自动生成基础属性并覆盖指定值！",
-            "update_tip": "🔔 已覆盖你指定的属性值，未指定属性保留原有值！",
+📊 当前预设属性总值：{预设总属性}
+📊 所有属性总数：{属性总数}
+💡 发送「/查询角色」查看完整属性，/rd [属性名] 检定属性""",
+            "auto_create_tip": "🔔 检测到你未创建角色，已自动生成预设属性并新增/覆盖指定值！",
+            "update_tip": "🔔 已新增/覆盖你指定的属性值！",
             "error_template": """❌ 属性修改失败：
 {错误原因}
-💡 正确格式：/st 力量80 体质75（属性值范围1-100）
-💡 支持属性：{支持属性}"""
+💡 正确格式：/st 力量80 感知75（属性值范围1-100，支持自定义属性）
+💡 预设属性：{预设属性列表}"""
+        },
+        "delete_attr": {
+            "success_template": """✅ 属性操作成功！
+{操作描述}
+📊 当前预设属性总值：{预设总属性}
+📊 所有属性总数：{属性总数}
+💡 发送「/查询角色」查看最新属性""",
+            "delete_role_template": """✅ 角色删除成功！
+你的所有角色数据（预设属性+自定义属性）已清空，可发送「/创建角色」重新生成。""",
+            "error_template": """❌ 属性操作失败：
+{错误原因}
+💡 支持的操作：
+1. /删除 [属性名] → 删除/重置属性（如/删除 感知、/删除 力量）
+2. /删除角色 → 删除整个角色数据"""
         }
     }
 
-    # 读取配置文件，不存在则返回默认配置
     try:
         if os.path.exists(config_path):
             with open(config_path, "rb") as f:
                 user_config = tomllib.load(f)
-                # 深度合并用户配置和默认配置（用户配置覆盖默认）
                 for section in default_config.keys():
                     if section in user_config:
                         default_config[section].update(user_config[section])
@@ -190,179 +149,186 @@ def get_plugin_config() -> Dict[str, Any]:
         logger.error(f"读取配置文件失败：{e}")
         return default_config
 
-# ===================== 模板渲染工具函数 =====================
+# ===================== 工具函数 =====================
 def render_template(template: str, data: Dict[str, Any]) -> str:
-    """
-    通用模板渲染函数（安全替换，兼容未定义变量）
-    Args:
-        template: 模板字符串
-        data: 渲染数据字典
-    Returns:
-        渲染后的字符串
-    """
+    """模板渲染（兼容未定义变量）"""
     try:
         return template.format(** data)
     except KeyError as e:
         logger.warning(f"模板变量缺失：{e}")
-        # 降级替换：只替换存在的变量
         rendered = template
         for key, value in data.items():
             rendered = rendered.replace(f"{{{key}}}", str(value))
         return rendered
 
-# ===================== 核心骰子逻辑（优化：支持默认1个骰子） =====================
 def parse_dice_expression(expr: str) -> Tuple[int, int, int]:
-    """
-    解析骰子表达式，支持格式：
-    - 完整格式：数量d面数[±修正值]（如1d100、2d6+3）
-    - 简化格式：d面数[±修正值]（如d100 → 自动补全1d100）
-    
-    Args:
-        expr: 骰子表达式字符串
-        
-    Returns:
-        (数量, 面数, 修正值)
-        
-    Raises:
-        ValueError: 无效表达式
-    """
-    # 优化正则：数量部分可选（\d*），匹配d开头的简化格式
+    """解析骰子表达式（支持d100、2d6+3等）"""
     pattern = r"^(\d*)d(\d+)([+-]\d+)?$"
     match = re.match(pattern, expr.strip(), re.IGNORECASE)
-    
     if not match:
-        raise ValueError(f"无效的骰子表达式：{expr}，请使用「[数量]d面数[±修正值]」格式（如d100、2d6+3）")
+        raise ValueError(f"无效的骰子表达式：{expr}（格式示例：d100、2d6+3）")
     
-    # 处理数量：为空则默认1
-    count_str = match.group(1)
-    count = int(count_str) if count_str else 1
+    count = int(match.group(1)) if match.group(1) else 1
     face = int(match.group(2))
-    modifier_str = match.group(3)
-    modifier = int(modifier_str) if modifier_str else 0
+    modifier = int(match.group(3)) if match.group(3) else 0
     
-    # 合法性校验
     if count <= 0 or count > 100:
-        raise ValueError(f"骰子数量{count}超出范围（仅支持1-100个骰子）")
+        raise ValueError(f"骰子数量{count}超出范围（1-100）")
     if face <= 0 or face > 1000:
-        raise ValueError(f"骰子面数{face}超出范围（仅支持1-1000面骰子）")
-    
+        raise ValueError(f"骰子面数{face}超出范围（1-1000）")
     return count, face, modifier
 
 def roll_dice(count: int, face: int, modifier: int = 0) -> Tuple[List[int], int]:
-    """执行骰子投掷，返回单次结果列表和总计"""
+    """执行骰子投掷"""
     rolls = [random.randint(1, face) for _ in range(count)]
     total = sum(rolls) + modifier
     return rolls, total
 
-# ===================== 辅助函数：拆分检定参数（表达式+原因） =====================
 def split_check_params(params: str) -> Tuple[str, str]:
-    """
-    拆分检定参数为「阈值/表达式」和「原因」
-    规则：第一个空格前的部分为表达式，剩余部分为原因
-    
-    Args:
-        params: 完整参数字符串（如"70 探索密室"）
-        
-    Returns:
-        (表达式, 原因)
-    """
+    """拆分检定参数（第一个参数+剩余原因）"""
     if not params.strip():
         return "", ""
-    
     parts = params.strip().split(" ", 1)
-    expr = parts[0]
-    reason = parts[1] if len(parts) > 1 else ""
-    return expr, reason
+    return parts[0], parts[1] if len(parts) > 1 else ""
 
-# ===================== 新增：属性导入解析函数（优化：去除=，支持属性名+数值） =====================
 def parse_import_attr_params(params: str) -> Dict[str, int]:
-    """
-    解析/st/导入指令的属性参数，格式：属性名数值 多个属性用空格分隔
-    示例："力量80 体质75" → {"力量":80, "体质":75}
-    
-    Args:
-        params: 属性参数字符串
-        
-    Returns:
-        解析后的属性字典 {属性名: 属性值}
-        
-    Raises:
-        ValueError: 格式错误/值非法/属性名不存在
-    """
+    """解析导入属性参数（无=格式，支持自定义属性）"""
     if not params.strip():
         raise ValueError("未输入任何属性参数")
     
     attr_dict = {}
-    # 按空格拆分多个属性
     attr_pairs = params.strip().split()
-    
-    # 匹配属性名+数值的正则（属性名：非数字，数值：数字）
     attr_pattern = re.compile(r"([^0-9]+)(\d+)")
     
     for pair in attr_pairs:
         match = attr_pattern.match(pair)
         if not match:
-            raise ValueError(f"属性格式错误：{pair}（正确格式：属性名数值，如力量80）")
+            raise ValueError(f"属性格式错误：{pair}（正确示例：力量80、感知75）")
         
         attr_name = match.group(1).strip()
         value_str = match.group(2).strip()
         
-        # 验证属性名是否合法
-        if attr_name not in VALID_ATTR_NAMES:
-            raise ValueError(f"无效属性名：{attr_name}（支持属性：{', '.join(VALID_ATTR_NAMES)}）")
-        
-        # 验证属性值是否为数字
         if not value_str.isdigit():
             raise ValueError(f"属性值非法：{attr_name}{value_str}（必须是1-100的整数）")
         
         attr_value = int(value_str)
-        # 验证属性值范围
         if attr_value < 1 or attr_value > 100:
-            raise ValueError(f"属性值超出范围：{attr_name}{attr_value}（必须是1-100的整数）")
+            raise ValueError(f"属性值超出范围：{attr_name}{attr_value}（1-100）")
         
         attr_dict[attr_name] = attr_value
-    
     return attr_dict
 
-# ===================== 角色属性生成逻辑 =====================
 def generate_character_attributes() -> Dict[str, int]:
-    """
-    生成跑团基础属性，公式：3D6×5
-    Returns:
-        字典格式：{属性缩写: 最终属性值}
-    """
-    attr_mapping = {
-        "力量(STR)": "STR",
-        "体质(CON)": "CON",
-        "体型(SIZ)": "SIZ",
-        "敏捷(DEX)": "DEX",
-        "外貌(APP)": "APP",
-        "智力(INT)": "INT",
-        "意志(POW)": "POW",
-        "教育(EDU)": "EDU",
-        "幸运(LUCK)": "LUCK"
-    }
+    """生成预设基础属性（3d6*5）"""
     attr_results = {}
-    
-    for full_name, short_name in attr_mapping.items():
+    for _, (short_name, _) in PRESET_ATTR_MAP.items():
         rolls, sum_3d6 = roll_dice(3, 6)
         attr_results[short_name] = sum_3d6 * 5
-    
-    attr_results["总属性"] = sum(attr_results.values())
+    attr_results["总属性"] = sum([attr_results[short] for short in PRESET_ATTR_TO_SHORT.values()])
     return attr_results
+
+def generate_single_preset_attr(attr_name: str) -> int:
+    """生成单个预设属性的默认值（3d6*5）"""
+    if attr_name not in PRESET_ATTR_TO_SHORT:
+        raise ValueError(f"{attr_name}不是预设属性，无法生成默认值")
+    short_name = PRESET_ATTR_TO_SHORT[attr_name]
+    rolls, sum_3d6 = roll_dice(3, 6)
+    return sum_3d6 * 5
+
+def format_character_attributes(char_data: Dict[str, int]) -> Tuple[str, str, int, int]:
+    """格式化角色属性（区分预设/自定义）- 修改点1：移除自定义属性前缀"""
+    # 处理预设属性
+    preset_attr_lines = []
+    preset_total = 0
+    for attr_name, (short_name, full_name) in PRESET_ATTR_MAP.items():
+        value = char_data.get(short_name, 0)
+        preset_attr_lines.append(f"🔹 {full_name}：{value}")
+        preset_total += value
+    
+    # 处理自定义属性 - 移除「自定义属性-」前缀
+    custom_attr_lines = []
+    custom_count = 0
+    for key, value in char_data.items():
+        if key not in SHORT_TO_PRESET_ATTR and key != "总属性":
+            custom_attr_lines.append(f"🔹 {key}：{value}")  # 修改：直接显示属性名
+            custom_count += 1
+    
+    preset_attr_str = "\n".join(preset_attr_lines) if preset_attr_lines else "暂无预设属性"
+    custom_attr_str = "\n".join(custom_attr_lines) if custom_attr_lines else "暂无自定义属性"
+    total_attr_count = 9 + custom_count
+    
+    return preset_attr_str, custom_attr_str, preset_total, total_attr_count
+
+# ===================== 删除属性/角色核心函数 =====================
+def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str, Dict[str, int]]:
+    """
+    删除/重置角色属性 - 修改点2：移除自定义属性前缀
+    Args:
+        user_id: 用户ID
+        attr_name: 要删除的属性名
+    
+    Returns:
+        (操作是否成功, 操作描述, 更新后的角色数据)
+    """
+    if user_id not in USER_CHARACTER_DATA:
+        return False, "你还未创建角色，无属性可删除！", {}
+    
+    user_char = USER_CHARACTER_DATA[user_id].copy()
+    
+    # 1. 处理预设属性（重置为3d6*5）
+    if attr_name in PRESET_ATTR_NAMES:
+        short_name = PRESET_ATTR_TO_SHORT[attr_name]
+        old_value = user_char.get(short_name, 0)
+        new_value = generate_single_preset_attr(attr_name)
+        user_char[short_name] = new_value
+        
+        # 重新计算预设总值
+        preset_total = sum([user_char.get(short, 0) for short in PRESET_ATTR_TO_SHORT.values()])
+        user_char["总属性"] = preset_total
+        
+        return True, f"预设属性-{attr_name}已重置为默认值（3d6×5）：{old_value} → {new_value}", user_char
+    
+    # 2. 处理自定义属性（直接删除）- 移除「自定义属性-」前缀
+    elif attr_name in user_char:
+        old_value = user_char[attr_name]
+        del user_char[attr_name]
+        
+        # 重新计算预设总值（自定义属性不影响）
+        preset_total = sum([user_char.get(short, 0) for short in PRESET_ATTR_TO_SHORT.values()])
+        user_char["总属性"] = preset_total
+        
+        return True, f"{attr_name}已删除（原值：{old_value}）", user_char  # 修改：直接显示属性名
+    
+    # 3. 属性不存在
+    else:
+        return False, f"未找到属性「{attr_name}」，无法删除！", user_char
+
+def delete_character(user_id: str) -> bool:
+    """
+    删除整个角色数据
+    Args:
+        user_id: 用户ID
+    
+    Returns:
+        是否删除成功
+    """
+    if user_id in USER_CHARACTER_DATA:
+        del USER_CHARACTER_DATA[user_id]
+        save_character_data(USER_CHARACTER_DATA)
+        return True
+    return False
 
 # ===================== LLM调用工具 =====================
 class CoCDiceTool(BaseTool):
-    """CoC骰子工具 - 投掷克苏鲁跑团常用骰子"""
+    """CoC骰子工具（LLM调用）"""
     name = "coc_dice_tool"
-    description = "克苏鲁跑团骰子投掷工具，支持D100百分骰、D4/D6/D8/D10/D12/D20等多面骰，表达式格式为「[数量]d面数[±修正值]」（如d100、2d6+3）"
+    description = "克苏鲁跑团骰子投掷工具，支持D100/2d6等格式，返回投掷结果"
     parameters = [
-        ("dice_expr", ToolParamType.STRING, "骰子表达式（格式：[数量]d面数[±修正值]，如d100、2d6+3）", True, None),
+        ("dice_expr", ToolParamType.STRING, "骰子表达式（如d100、2d6+3）", True, None),
     ]
     available_for_llm = True
 
     async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
-        """执行骰子投掷（LLM调用入口）"""
         dice_expr = function_args.get("dice_expr", "")
         if not dice_expr:
             error_msg = "错误：未提供骰子表达式"
@@ -388,16 +354,14 @@ class CoCDiceTool(BaseTool):
             
             roll_data = {
                 "表达式": dice_expr,
-                "原因说明": "",  # LLM调用暂不支持原因
+                "原因说明": "",
                 "单次结果": roll_detail,
                 "修正值": modifier_str,
                 "总计": total,
                 "判定结果": judge_result.strip()
             }
             
-            roll_template = config["dice"]["roll_template"]
-            result_msg = render_template(roll_template, roll_data)
-            
+            result_msg = render_template(config["dice"]["roll_template"], roll_data)
             await self.send_text(result_msg)
             return {"name": self.name, "content": result_msg}
         
@@ -412,37 +376,36 @@ class CoCDiceTool(BaseTool):
 
 # ===================== 核心命令处理 =====================
 class CoCDiceCommand(BaseCommand):
-    """CoC骰子命令 - 支持/r/rd快捷指令、检定原因、默认1个骰子、属性导入（自动创建角色+无=格式）"""
+    """核心命令处理类"""
     command_name = "coc_dice_command"
-    command_description = f"""克苏鲁骰子投掷/检定/角色创建/角色查询/属性导入（支持角色绑定+持久化）
+    command_description = f"""克苏鲁骰子/角色管理插件（支持自定义属性+删除操作）
 用法：
-1. /r [表达式] [原因] 或 /掷骰 [表达式] [原因]（投掷骰子，表达式支持d100/2d6+3等，原因可选）
-   示例：/r d100 探索密室 → 投掷1d100，原因：探索密室
-2. /rd [阈值] [原因] 或 /检定 [阈值] [原因]（D100检定，阈值/原因可选）
-   示例：/rd 70 躲避陷阱 → 阈值70的检定，原因：躲避陷阱
-3. /创建角色（随机生成跑团基础属性并绑定到当前账号）
-4. /查询角色（查看已绑定的角色属性）
-5. /属性名（自动用绑定角色的对应属性检定，支持：{', '.join(VALID_ATTR_COMMANDS)}）
-   示例：/力量 → 用你的力量属性值做D100检定
-6. /st [属性数值] 或 /导入 [属性数值]（修改/创建角色属性，支持多属性，无需要=）
-   示例：/st 力量80 体质75 → 把力量改为80，体质改为75（未创建角色则自动生成）
-   支持属性：{', '.join(VALID_ATTR_NAMES)}（值范围1-100）"""
+1. /r [表达式] [原因] → 投掷骰子（如/r d100 探索密室）
+2. /rd [参数] [原因] → 检定（支持两种模式）
+   - 模式1：/rd [阈值] [原因]（如/rd 70 躲避陷阱）
+   - 模式2：/rd [属性名] [原因]（如/rd 力量、/rd 感知）
+3. /创建角色 → 生成预设基础属性（3d6*5）
+4. /查询角色 → 查看所有属性（预设+自定义）
+5. /st/导入 [属性数值] → 新增/修改属性（无=格式，如/st 力量80 感知75）
+6. /删除/ del [属性名] → 删除/重置属性
+   - 预设属性：重置为3d6*5（如/删除 力量）
+   - 自定义属性：直接删除（如/删除 感知）
+7. /删除角色/ del_all → 删除整个角色数据（所有属性清空）
+支持的预设属性：{', '.join(PRESET_ATTR_NAMES)}
+自定义属性：任意名称（如感知、魅力、幸运值）"""
     
-    # 扩展命令匹配规则：支持/st/导入/属性指令
-    command_pattern = rf"^/(r|rd|st|导入|掷骰|检定|创建角色|查询角色|{'|'.join(VALID_ATTR_COMMANDS)})(\s+.*)?$"
+    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|\w+)(\s+.*)?$"
 
     async def execute(self) -> Tuple[bool, str, bool]:
-        """执行所有骰子/角色指令"""
         global USER_CHARACTER_DATA
         
-        # ========== 提取用户ID ==========
+        # 提取用户ID
         user_id = None
         try:
             if (hasattr(self.message, 'message_info') and 
                 hasattr(self.message.message_info, 'user_info') and 
                 hasattr(self.message.message_info.user_info, 'user_id')):
                 user_id = str(self.message.message_info.user_info.user_id)
-                logger.info(f"成功提取用户ID：{user_id}")
             else:
                 logger.error("无法提取用户ID：属性层级缺失")
         except Exception as e:
@@ -453,208 +416,128 @@ class CoCDiceCommand(BaseCommand):
             await self.send_text(error_msg)
             return False, error_msg, True
         
-        # ========== 解析指令（处理快捷指令） ==========
+        # 解析指令
         raw_msg = self.message.raw_message.strip()
-        # 提取指令前缀（如/r、/rd、/st、/导入、/力量）
         cmd_prefix = re.match(r"^/(\w+)", raw_msg).group(1) if re.match(r"^/(\w+)", raw_msg) else ""
-        # 映射快捷指令
         if cmd_prefix in SHORT_CMD_MAP:
             original_cmd = SHORT_CMD_MAP[cmd_prefix]
-            # 替换快捷指令为原指令（如/r d100 → /掷骰 d100，/st → /导入）
             raw_msg = raw_msg.replace(f"/{cmd_prefix}", f"/{original_cmd}", 1)
             cmd_prefix = original_cmd
         
-        # 提取参数（指令后的所有内容）
         params = raw_msg[len(f"/{cmd_prefix}"):].strip()
         config = get_plugin_config()
-        
-        # ========== 新增：处理/导入指令（/st等效，优化：自动创建角色+无=格式） ==========
+
+        # ========== 1. 处理/导入指令 ==========
         if cmd_prefix == "导入":
             try:
-                # 1. 解析属性参数
                 import_attr_dict = parse_import_attr_params(params)
                 
-                # 2. 检查用户是否有角色，无则自动创建（3d6*5）
+                # 自动创建角色（无角色时）
                 is_auto_create = False
                 if user_id not in USER_CHARACTER_DATA:
                     USER_CHARACTER_DATA[user_id] = generate_character_attributes()
                     is_auto_create = True
-                    logger.info(f"用户{user_id}未创建角色，自动生成基础属性")
                 
-                # 3. 获取用户当前角色数据
+                # 新增/覆盖属性 - 修改点3：移除自定义属性前缀
                 user_char = USER_CHARACTER_DATA[user_id].copy()
-                # 4. 覆盖属性值（转换为缩写）
                 modified_attrs = []
                 for attr_name, attr_value in import_attr_dict.items():
-                    attr_short = ATTR_NAME_TO_SHORT[attr_name]
-                    old_value = user_char[attr_short]
-                    user_char[attr_short] = attr_value
-                    modified_attrs.append(f"🔹 {attr_name}({attr_short})：{old_value} → {attr_value}")
+                    if attr_name in PRESET_ATTR_TO_SHORT:
+                        # 预设属性（用缩写存储）
+                        attr_short = PRESET_ATTR_TO_SHORT[attr_name]
+                        old_value = user_char.get(attr_short, 0)
+                        user_char[attr_short] = attr_value
+                        modified_attrs.append(f"🔹 预设属性-{attr_name}({attr_short})：{old_value} → {attr_value}")
+                    else:
+                        # 自定义属性（直接存储）- 移除「自定义属性-」前缀
+                        old_value = user_char.get(attr_name, "无")
+                        user_char[attr_name] = attr_value
+                        modified_attrs.append(f"🔹 {attr_name}：{old_value} → {attr_value}")  # 修改：直接显示属性名
                 
-                # 5. 重新计算总属性
-                total_attr = sum([user_char[short] for short in ATTR_NAME_TO_SHORT.values()])
-                user_char["总属性"] = total_attr
+                # 重新计算预设总值
+                preset_total = sum([user_char.get(short, 0) for short in PRESET_ATTR_TO_SHORT.values()])
+                user_char["总属性"] = preset_total
+                custom_count = len([k for k in user_char.keys() if k not in SHORT_TO_PRESET_ATTR and k != "总属性"])
+                total_attr_count = 9 + custom_count
                 
-                # 6. 更新全局数据并保存
+                # 保存并返回结果
                 USER_CHARACTER_DATA[user_id] = user_char
                 save_character_data(USER_CHARACTER_DATA)
                 
-                # 7. 构建自动创建提示
                 auto_create_tip = config["import_attr"]["auto_create_tip"] if is_auto_create else config["import_attr"]["update_tip"]
-                
-                # 8. 渲染成功模板
                 import_data = {
                     "自动创建提示": auto_create_tip,
                     "修改列表": "\n".join(modified_attrs),
-                    "总属性": total_attr
+                    "预设总属性": preset_total,
+                    "属性总数": total_attr_count
                 }
-                success_template = config["import_attr"]["success_template"]
-                success_msg = render_template(success_template, import_data)
-                
+                success_msg = render_template(config["import_attr"]["success_template"], import_data)
                 await self.send_text(success_msg)
                 return True, success_msg, True
             
             except ValueError as e:
-                # 渲染错误模板
-                error_data = {
-                    "错误原因": str(e),
-                    "支持属性": ", ".join(VALID_ATTR_NAMES)
-                }
-                error_template = config["import_attr"]["error_template"]
-                error_msg = render_template(error_template, error_data)
+                error_data = {"错误原因": str(e), "预设属性列表": ", ".join(PRESET_ATTR_NAMES)}
+                error_msg = render_template(config["import_attr"]["error_template"], error_data)
                 await self.send_text(error_msg)
                 return False, error_msg, True
             except Exception as e:
-                logger.error(f"属性导入失败：{e}")
-                error_msg = f"❌ 属性修改出错：{str(e)}"
+                error_msg = f"❌ 属性导入出错：{str(e)}"
                 await self.send_text(error_msg)
                 return False, error_msg, True
-        
-        # ========== 处理属性检定指令（/力量、/体质等） ==========
-        elif cmd_prefix in VALID_ATTR_COMMANDS:
-            if params:
-                error_msg = f"❌ /{cmd_prefix}命令无需参数！直接发送「/{cmd_prefix}」即可检定。"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            if user_id not in USER_CHARACTER_DATA:
-                error_msg = f"❌ 你还未绑定角色！发送「/创建角色」后再使用「/{cmd_prefix}」。"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            try:
-                attr_short, attr_full = ATTR_COMMAND_MAP[cmd_prefix]
-                attr_value = USER_CHARACTER_DATA[user_id][attr_short]
-                
-                if not isinstance(attr_value, int) or attr_value < 1 or attr_value > 100:
-                    error_msg = f"❌ 你的{attr_full}属性值异常（{attr_value}），无法检定！"
-                    await self.send_text(error_msg)
-                    return False, error_msg, True
-                
-                rolls, total = roll_dice(1, 100)
-                success_thresh = config["dice"]["success_threshold"]
-                fail_thresh = config["dice"]["fail_threshold"]
-                
-                if total <= success_thresh:
-                    judge_result = "✨ 大成功！"
-                elif total <= attr_value:
-                    judge_result = "✅ 检定成功！"
-                elif total >= fail_thresh:
-                    judge_result = "💥 大失败！"
-                else:
-                    judge_result = "❌ 检定失败！"
-                
-                check_data = {
-                    "属性全称": attr_full,
-                    "阈值": attr_value,
-                    "投掷结果": total,
-                    "判定结果": judge_result.strip()
-                }
-                
-                msg = render_template(config["dice"]["attr_check_template"], check_data)
-                await self.send_text(msg)
-                return True, msg, True
-            
-            except Exception as e:
-                logger.error(f"{cmd_prefix}检定失败：{e}")
-                error_msg = f"❌ {cmd_prefix}检定出错：{str(e)}"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-        
-        # ========== 处理/创建角色指令 ==========
-        elif cmd_prefix == "创建角色":
-            if params:
-                error_msg = "❌ /创建角色命令无需参数！直接发送即可生成角色。"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            try:
-                attr_data = generate_character_attributes()
-                USER_CHARACTER_DATA[user_id] = attr_data
-                save_character_data(USER_CHARACTER_DATA)
-                
-                role_msg = render_template(config["character"]["output_template"], attr_data)
-                role_msg += "\n\n✅ 角色已绑定！支持/{力量}/{体质}等指令自动检定，/r /掷骰、/rd /检定、/st /导入 修改属性 。"
-                
-                await self.send_text(role_msg)
-                return True, role_msg, True
-            
-            except Exception as e:
-                logger.error(f"创建角色失败：{e}")
-                error_msg = f"❌ 创建角色出错：{str(e)}"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-        
-        # ========== 处理/查询角色指令 ==========
-        elif cmd_prefix == "查询角色":
-            if params:
-                error_msg = "❌ /查询角色命令无需参数！直接发送即可查看。"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            if user_id not in USER_CHARACTER_DATA:
-                error_msg = "❌ 你还未绑定角色！发送「/创建角色」生成角色，或直接用/st指令自动创建。"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            try:
-                attr_data = USER_CHARACTER_DATA[user_id]
-                query_msg = render_template(config["character"]["query_template"], attr_data)
-                await self.send_text(query_msg)
-                return True, query_msg, True
-            
-            except Exception as e:
-                logger.error(f"查询角色失败：{e}")
-                error_msg = f"❌ 查询角色出错：{str(e)}"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-        
-        # ========== 处理/检定指令（新增原因解析） ==========
+
+        # ========== 2. 处理/检定指令 - 修改点4：移除自定义属性前缀 ==========
         elif cmd_prefix == "检定":
-            # 拆分阈值和原因
-            threshold_str, reason = split_check_params(params)
-            if not threshold_str:
-                error_msg = "❌ 缺少检定阈值！用法：/检定 70 [原因] 或 /rd 70 [原因]。"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            if not threshold_str.isdigit():
-                error_msg = "❌ 检定阈值必须是数字！示例：/检定 70 躲避陷阱。"
+            first_param, reason = split_check_params(params)
+            if not first_param:
+                error_msg = """❌ 缺少检定参数！支持两种用法：
+1. /rd [阈值] [原因]（如/rd 70 躲避陷阱）
+2. /rd [属性名] [原因]（如/rd 力量、/rd 感知）"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
             
             try:
-                check_threshold = int(threshold_str)
-                if check_threshold < 1 or check_threshold > 99:
-                    error_msg = "❌ 检定阈值范围必须是1-99！"
-                    await self.send_text(error_msg)
-                    return False, error_msg, True
+                check_threshold = None
+                attr_name = None
+                is_custom_attr = False
                 
-                # 执行检定
+                # 判断参数类型：数字阈值 / 属性名
+                if first_param.isdigit():
+                    # 模式1：直接阈值检定
+                    check_threshold = int(first_param)
+                    if check_threshold < 1 or check_threshold > 99:
+                        error_msg = "❌ 检定阈值范围必须是1-99！"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                else:
+                    # 模式2：属性名检定（预设/自定义）
+                    attr_name = first_param
+                    if user_id not in USER_CHARACTER_DATA:
+                        error_msg = f"❌ 你还未创建角色！无法获取「{attr_name}」属性值。"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                    
+                    user_char = USER_CHARACTER_DATA[user_id]
+                    # 优先查预设属性
+                    if attr_name in PRESET_ATTR_TO_SHORT:
+                        attr_short = PRESET_ATTR_TO_SHORT[attr_name]
+                        check_threshold = user_char.get(attr_short, 0)
+                    else:
+                        # 查自定义属性
+                        check_threshold = user_char.get(attr_name, 0)
+                        is_custom_attr = True
+                    
+                    # 验证属性值有效性
+                    if not isinstance(check_threshold, int) or check_threshold < 1 or check_threshold > 100:
+                        error_msg = f"❌ 「{attr_name}」属性值异常（{check_threshold}），无法检定！"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                
+                # 执行D100检定
                 rolls, total = roll_dice(1, 100)
                 success_thresh = config["dice"]["success_threshold"]
                 fail_thresh = config["dice"]["fail_threshold"]
                 
+                # 判定结果
                 if total <= success_thresh:
                     judge_result = "✨ 大成功！"
                 elif total <= check_threshold:
@@ -664,37 +547,174 @@ class CoCDiceCommand(BaseCommand):
                 else:
                     judge_result = "❌ 检定失败！"
                 
-                # 构建原因说明
-                reason_desc = f"因为{reason}所以进行D100检定" if reason else ""
+                # 构建提示信息 - 移除自定义属性前缀
+                reason_desc = f"因为{reason}所以进行" if reason else "进行"
+                if attr_name:
+                    # 属性检定提示 - 简化属性类型描述
+                    attr_type = "" if is_custom_attr else "预设属性-"  # 修改：自定义属性不显示前缀
+                    check_template = f"""🎲 {attr_type}{attr_name}检定（阈值：{{阈值}}）
+{reason_desc}「{attr_name}」属性检定
+你的{attr_name}属性值：{{阈值}}
+投掷结果：{{投掷结果}}
+{{判定结果}}"""
+                    check_data = {
+                        "阈值": check_threshold,
+                        "原因说明": reason_desc,
+                        "投掷结果": total,
+                        "判定结果": judge_result
+                    }
+                    msg = render_template(check_template, check_data)
+                else:
+                    # 阈值检定提示（原有逻辑）
+                    check_data = {
+                        "阈值": check_threshold,
+                        "原因说明": f"{reason_desc}D100检定",
+                        "投掷结果": total,
+                        "判定结果": judge_result
+                    }
+                    msg = render_template(config["dice"]["check_template"], check_data)
                 
-                check_data = {
-                    "阈值": check_threshold,
-                    "原因说明": reason_desc,
-                    "投掷结果": total,
-                    "判定结果": judge_result.strip()
-                }
-                
-                msg = render_template(config["dice"]["check_template"], check_data)
                 await self.send_text(msg)
                 return True, msg, True
             
             except Exception as e:
-                logger.error(f"检定失败：{e}")
                 error_msg = f"❌ 检定出错：{str(e)}"
                 await self.send_text(error_msg)
                 return False, error_msg, True
-        
-        # ========== 处理/掷骰指令（支持默认1个骰子+原因） ==========
-        elif cmd_prefix == "掷骰":
-            # 拆分表达式和原因
-            dice_expr, reason = split_check_params(params)
-            if not dice_expr:
-                error_msg = "❌ 缺少骰子表达式！用法：/掷骰 d100 [原因] 或 /r d100 [原因]。"
+
+        # ========== 3. 处理/删除指令 ==========
+        elif cmd_prefix == "删除":
+            attr_name = params.strip()
+            if not attr_name:
+                error_msg = """❌ 缺少属性名参数！
+用法：/删除 [属性名]（如/删除 力量、/删除 感知）
+- 预设属性：重置为3d6×5
+- 自定义属性：直接删除"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
             
             try:
-                # 解析表达式（自动补全默认1个骰子）
+                # 执行删除/重置操作
+                success, op_desc, user_char = delete_character_attribute(user_id, attr_name)
+                
+                if success:
+                    # 计算最新属性统计
+                    _, _, preset_total, total_count = format_character_attributes(user_char)
+                    # 更新全局数据并保存
+                    USER_CHARACTER_DATA[user_id] = user_char
+                    save_character_data(USER_CHARACTER_DATA)
+                    # 渲染成功提示
+                    delete_data = {
+                        "操作描述": op_desc,
+                        "预设总属性": preset_total,
+                        "属性总数": total_count
+                    }
+                    success_msg = render_template(config["delete_attr"]["success_template"], delete_data)
+                    await self.send_text(success_msg)
+                    return True, success_msg, True
+                else:
+                    # 渲染错误提示
+                    error_data = {"错误原因": op_desc}
+                    error_msg = render_template(config["delete_attr"]["error_template"], error_data)
+                    await self.send_text(error_msg)
+                    return False, error_msg, True
+            
+            except Exception as e:
+                error_msg = f"❌ 删除属性出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+        # ========== 4. 处理/删除角色指令 ==========
+        elif cmd_prefix == "删除角色":
+            if params:
+                error_msg = "❌ /删除角色命令无需参数！直接发送即可删除整个角色数据。"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                if delete_character(user_id):
+                    success_msg = render_template(config["delete_attr"]["delete_role_template"], {})
+                    await self.send_text(success_msg)
+                    return True, success_msg, True
+                else:
+                    error_msg = "❌ 你还未创建角色，无角色数据可删除！"
+                    await self.send_text(error_msg)
+                    return False, error_msg, True
+            
+            except Exception as e:
+                error_msg = f"❌ 删除角色出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+        # ========== 5. 处理/创建角色指令 ==========
+        elif cmd_prefix == "创建角色":
+            if params:
+                error_msg = "❌ /创建角色命令无需参数！"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                attr_data = generate_character_attributes()
+                USER_CHARACTER_DATA[user_id] = attr_data
+                save_character_data(USER_CHARACTER_DATA)
+                
+                preset_attr_lines = []
+                for attr_name, (short_name, full_name) in PRESET_ATTR_MAP.items():
+                    preset_attr_lines.append(f"🔹 {full_name}：{attr_data[short_name]}")
+                preset_attr_str = "\n".join(preset_attr_lines)
+                
+                role_data = {"属性列表": preset_attr_str, "总属性": attr_data["总属性"]}
+                role_msg = render_template(config["character"]["output_template"], role_data)
+                role_msg += "\n\n✅ 角色创建成功！/st可新增自定义属性，/rd [属性名] 可检定属性，/删除 [属性名] 可重置/删除属性。"
+                
+                await self.send_text(role_msg)
+                return True, role_msg, True
+            
+            except Exception as e:
+                error_msg = f"❌ 创建角色出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+        # ========== 6. 处理/查询角色指令 ==========
+        elif cmd_prefix == "查询角色":
+            if params:
+                error_msg = "❌ /查询角色命令无需参数！"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            if user_id not in USER_CHARACTER_DATA:
+                error_msg = "❌ 你还未创建角色！可发送/创建角色或/st指令自动创建。"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                char_data = USER_CHARACTER_DATA[user_id]
+                preset_attr_str, custom_attr_str, preset_total, total_count = format_character_attributes(char_data)
+                
+                query_data = {
+                    "预设属性列表": preset_attr_str,
+                    "自定义属性列表": custom_attr_str,
+                    "预设总属性": preset_total,
+                    "属性总数": total_count
+                }
+                query_msg = render_template(config["character"]["query_template"], query_data)
+                await self.send_text(query_msg)
+                return True, query_msg, True
+            
+            except Exception as e:
+                error_msg = f"❌ 查询角色出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+        # ========== 7. 处理/掷骰指令 ==========
+        elif cmd_prefix == "掷骰":
+            dice_expr, reason = split_check_params(params)
+            if not dice_expr:
+                error_msg = "❌ 缺少骰子表达式！示例：/r d100 探索密室。"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
                 count, face, modifier = parse_dice_expression(dice_expr)
                 rolls, total = roll_dice(count, face, modifier)
                 
@@ -710,12 +730,9 @@ class CoCDiceCommand(BaseCommand):
                     elif total >= fail_thresh:
                         judge_result = "💥 大失败！"
                 
-                # 构建原因说明
-                reason_desc = f"因为{reason}所以进行{dice_expr}投掷" if reason else ""
-                
                 roll_data = {
                     "表达式": dice_expr,
-                    "原因说明": reason_desc,
+                    "原因说明": f"因为{reason}所以进行" if reason else "进行",
                     "单次结果": roll_detail,
                     "修正值": modifier_str,
                     "总计": total,
@@ -731,14 +748,13 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
             except Exception as e:
-                logger.error(f"掷骰失败：{e}")
                 error_msg = f"❌ 掷骰出错：{str(e)}"
                 await self.send_text(error_msg)
                 return False, error_msg, True
-        
-        # ========== 未知指令 ==========
+
+        # ========== 8. 未知指令 ==========
         else:
-            error_msg = f"❌ 未知指令：/{cmd_prefix}，支持的指令：/r/rd/st/导入/掷骰/检定/创建角色/查询角色/属性名。"
+            error_msg = f"❌ 未知指令：/{cmd_prefix}！支持的指令：/r/rd/st/导入/del/删除/del_all/删除角色/掷骰/检定/创建角色/查询角色。"
             await self.send_text(error_msg)
             return False, error_msg, True
 
@@ -747,7 +763,7 @@ class CoCDiceEventHandler(BaseEventHandler):
     """监听「掷骰」关键词自动响应"""
     event_type = EventType.ON_MESSAGE
     handler_name = "coc_dice_handler"
-    handler_description = "监听消息中的「掷骰」关键词，自动响应骰子投掷"
+    handler_description = "监听消息中的「掷骰」关键词，自动投掷骰子"
 
     async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, str | None, None, None]:
         if not message or not message.plain_text:
@@ -795,7 +811,7 @@ class CoCDiceEventHandler(BaseEventHandler):
 # ===================== 插件注册 =====================
 @register_plugin
 class CoCDicePlugin(BasePlugin):
-    """CoC骰子插件 - 支持快捷指令/检定原因/默认1个骰子/属性导入（自动创建+无=格式）"""
+    """插件注册类"""
     plugin_name: str = "coc_dice_plugin"
     enable_plugin: bool = True
     dependencies: List[str] = []
@@ -804,154 +820,51 @@ class CoCDicePlugin(BasePlugin):
 
     config_section_descriptions = {
         "plugin": "插件基础配置",
-        "dice": "骰子/检定相关配置（含自定义模板）",
-        "character": "角色创建/查询模板配置",
-        "import_attr": "属性导入指令模板配置"
+        "dice": "骰子/检定配置",
+        "character": "角色配置",
+        "import_attr": "属性导入配置",
+        "delete_attr": "属性删除配置"
     }
 
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(
-                type=str, 
-                default="1.0.0", 
-                description="配置文件版本"
-            ),
-            "enabled": ConfigField(
-                type=bool, 
-                default=True, 
-                description="是否启用插件"
-            )
+            "config_version": ConfigField(type=str, default="1.0.0", description="配置版本"),
+            "enabled": ConfigField(type=bool, default=True, description="是否启用插件")
         },
         "dice": {
-            "show_detail": ConfigField(
-                type=bool, 
-                default=True, 
-                description="是否显示单次投掷详情"
-            ),
-            "success_threshold": ConfigField(
-                type=int, 
-                default=5, 
-                description="D100大成功阈值（≤该值为大成功）"
-            ),
-            "fail_threshold": ConfigField(
-                type=int, 
-                default=96, 
-                description="D100大失败阈值（≥该值为大失败）"
-            ),
-            "default_message": ConfigField(
-                type=str, 
-                default="🎲 克苏鲁骰子投掷完成！", 
-                description="骰子投掷默认提示消息"
-            ),
-            "roll_template": ConfigField(
-                type=str,
-                default="""🎲 投掷「{表达式}」结果：
-{原因说明}
-单次结果：{单次结果}
-修正值：{修正值}
-总计：{总计}
-{判定结果}""",
-                description="掷骰命令输出模板，支持变量：{表达式}/{原因说明}/{单次结果}/{修正值}/{总计}/{判定结果}"
-            ),
-            "check_template": ConfigField(
-                type=str,
-                default="""🎲 克苏鲁检定（阈值：{阈值}）
-{原因说明}
-投掷结果：{投掷结果}
-{判定结果}""",
-                description="检定命令输出模板，支持变量：{阈值}/{原因说明}/{投掷结果}/{判定结果}"
-            ),
-            "attr_check_template": ConfigField(
-                type=str,
-                default="""🎲 {属性全称}检定（阈值：{阈值}）
-你的{属性全称}属性值：{阈值}
-投掷结果：{投掷结果}
-{判定结果}""",
-                description="属性检定专用模板，支持变量：{属性全称}/{阈值}/{投掷结果}/{判定结果}"
-            )
+            "show_detail": ConfigField(type=bool, default=True, description="显示投掷详情"),
+            "success_threshold": ConfigField(type=int, default=5, description="D100大成功阈值"),
+            "fail_threshold": ConfigField(type=int, default=96, description="D100大失败阈值"),
+            "default_message": ConfigField(type=str, default="🎲 骰子投掷完成！", description="默认提示"),
+            "roll_template": ConfigField(type=str, default=get_plugin_config()["dice"]["roll_template"], description="掷骰模板"),
+            "check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["check_template"], description="检定模板")
         },
         "character": {
-            "output_template": ConfigField(
-                type=str,
-                default="""🎭 随机生成跑团基础属性：
-
-🔹 力量(STR)：{STR}
-🔹 体质(CON)：{CON}
-🔹 体型(SIZ)：{SIZ}
-🔹 敏捷(DEX)：{DEX}
-🔹 外貌(APP)：{APP}
-🔹 智力(INT)：{INT}
-🔹 意志(POW)：{POW}
-🔹 教育(EDU)：{EDU}
-🔹 幸运(LUCK)：{LUCK}
-
-📊 属性总值：{总属性}""",
-                description="角色创建输出模板，支持变量：{STR}/{CON}/{SIZ}/{DEX}/{APP}/{INT}/{POW}/{EDU}/{LUCK}/{总属性}"
-            ),
-            "query_template": ConfigField(
-                type=str,
-                default="""🎭 你的绑定角色属性：
-
-🔹 力量(STR)：{STR}
-🔹 体质(CON)：{CON}
-🔹 体型(SIZ)：{SIZ}
-🔹 敏捷(DEX)：{DEX}
-🔹 外貌(APP)：{APP}
-🔹 智力(INT)：{INT}
-🔹 意志(POW)：{POW}
-🔹 教育(EDU)：{EDU}
-🔹 幸运(LUCK)：{LUCK}
-
-📊 属性总值：{总属性}
-💡 提示：发送「/创建角色」可重新生成并覆盖当前角色
-💡 支持指令：/{力量}/{体质}/{体型}/{敏捷}/{外貌}/{智力}/{意志}/{教育}/{幸运}（自动检定对应属性）
-💡 快捷指令：/r [表达式] [原因]   /掷骰、/rd [阈值] [原因]   /检定
-💡 属性修改：/st [属性数值] 或 /导入 [属性数值]（支持多属性，如：/st 力量80 体质75）""",
-                description="角色查询输出模板，支持变量：{STR}/{CON}/{SIZ}/{DEX}/{APP}/{INT}/{POW}/{EDU}/{LUCK}/{总属性}"
-            )
+            "output_template": ConfigField(type=str, default=get_plugin_config()["character"]["output_template"], description="创建角色模板"),
+            "query_template": ConfigField(type=str, default=get_plugin_config()["character"]["query_template"], description="查询角色模板")
         },
-        # 新增：属性导入模板配置
         "import_attr": {
-            "success_template": ConfigField(
-                type=str,
-                default="""✅ 角色属性修改成功！
-{自动创建提示}
-修改的属性：
-{修改列表}
-当前角色属性总值：{总属性}
-💡 发送「/查询角色」查看完整属性""",
-                description="属性导入成功提示模板，支持变量：{自动创建提示}/{修改列表}/{总属性}"
-            ),
-            "auto_create_tip": ConfigField(
-                type=str,
-                default="🔔 检测到你未创建角色，已自动生成基础属性并覆盖指定值！",
-                description="自动创建角色时的提示语"
-            ),
-            "update_tip": ConfigField(
-                type=str,
-                default="🔔 已覆盖你指定的属性值，未指定属性保留原有值！",
-                description="更新已有角色属性时的提示语"
-            ),
-            "error_template": ConfigField(
-                type=str,
-                default="""❌ 属性修改失败：
-{错误原因}
-💡 正确格式：/st 力量80 体质75（属性值范围1-100）
-💡 支持属性：{支持属性}""",
-                description="属性导入失败提示模板，支持变量：{错误原因}/{支持属性}"
-            )
+            "success_template": ConfigField(type=str, default=get_plugin_config()["import_attr"]["success_template"], description="导入成功模板"),
+            "auto_create_tip": ConfigField(type=str, default=get_plugin_config()["import_attr"]["auto_create_tip"], description="自动创建提示"),
+            "update_tip": ConfigField(type=str, default=get_plugin_config()["import_attr"]["update_tip"], description="更新提示"),
+            "error_template": ConfigField(type=str, default=get_plugin_config()["import_attr"]["error_template"], description="导入错误模板")
+        },
+        "delete_attr": {
+            "success_template": ConfigField(type=str, default=get_plugin_config()["delete_attr"]["success_template"], description="删除属性成功模板"),
+            "delete_role_template": ConfigField(type=str, default=get_plugin_config()["delete_attr"]["delete_role_template"], description="删除角色成功模板"),
+            "error_template": ConfigField(type=str, default=get_plugin_config()["delete_attr"]["error_template"], description="删除属性错误模板")
         }
     }
 
     def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
         return [
-            (CoCDiceTool.get_tool_info(), CoCDiceTool),          
+            (CoCDiceTool.get_tool_info(), CoCDiceTool),
             (CoCDiceCommand.get_command_info(), CoCDiceCommand),
             (CoCDiceEventHandler.get_handler_info(), CoCDiceEventHandler),
         ]
     
     def on_plugin_stop(self):
-        """插件停止时保存角色数据"""
+        """插件停止时保存数据"""
         global USER_CHARACTER_DATA
         save_character_data(USER_CHARACTER_DATA)
         logger.info("插件停止，角色数据已保存")
