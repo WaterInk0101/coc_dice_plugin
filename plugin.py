@@ -1,0 +1,528 @@
+import random
+import re
+import os
+import tomllib  # Python 3.11+ 内置，若版本低可替换为 toml 库
+from typing import List, Tuple, Type, Any, Optional, Dict
+from src.plugin_system import (
+    BasePlugin,
+    register_plugin,
+    BaseCommand,
+    BaseTool,
+    ComponentInfo,
+    ConfigField,
+    BaseEventHandler,
+    EventType,
+    MaiMessages,
+    ToolParamType,
+)
+from src.common.logger import get_logger
+
+logger = get_logger("coc_dice_plugin")
+
+# ===================== 配置文件相关（热重载） =====================
+def get_plugin_config() -> Dict[str, Any]:
+    """
+    读取配置文件（每次调用都重新读取，实现热重载）
+    Returns:
+        配置字典，包含所有模板配置项
+    """
+    # 配置文件路径（与插件同目录的config.toml）
+    config_path = os.path.join(os.path.dirname(__file__), "config.toml")
+    # 完整默认配置（包含角色、掷骰、检定模板）
+    default_config = {
+        "plugin": {
+            "config_version": "1.0.0",
+            "enabled": True
+        },
+        "dice": {
+            "show_detail": True,
+            "success_threshold": 5,
+            "fail_threshold": 96,
+            "default_message": "🎲 克苏鲁骰子投掷完成！",
+            # 掷骰命令默认模板
+            "roll_template": """🎲 投掷「{表达式}」结果：
+单次投掷结果：{单次结果}
+修正值：{修正值}
+总计：{总计}
+{判定结果}""",
+            # 检定命令默认模板
+            "check_template": """🎲 克苏鲁检定（阈值：{阈值}）
+投掷结果：{投掷结果}
+{判定结果}"""
+        },
+        "character": {
+            # 角色创建默认模板
+            "output_template": """🎭 随机生成跑团角色基础属性：
+
+🔹 力量(STR)：{STR}
+🔹 体质(CON)：{CON}
+🔹 体型(SIZ)：{SIZ}
+🔹 敏捷(DEX)：{DEX}
+🔹 外貌(APP)：{APP}
+🔹 智力(INT)：{INT}
+🔹 意志(POW)：{POW}
+🔹 教育(EDU)：{EDU}
+🔹 幸运(LUCK)：{LUCK}
+
+📊 属性总值：{总属性}"""
+        }
+    }
+
+    # 读取配置文件，不存在则返回默认配置
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, "rb") as f:
+                user_config = tomllib.load(f)
+                # 深度合并用户配置和默认配置（用户配置覆盖默认）
+                for section in default_config.keys():
+                    if section in user_config:
+                        default_config[section].update(user_config[section])
+        return default_config
+    except Exception as e:
+        logger.error(f"读取配置文件失败，使用默认配置：{e}")
+        return default_config
+
+# ===================== 模板渲染工具函数 =====================
+def render_template(template: str, data: Dict[str, Any]) -> str:
+    """
+    通用模板渲染函数（安全替换，兼容未定义变量）
+    Args:
+        template: 模板字符串
+        data: 渲染数据字典
+    Returns:
+        渲染后的字符串
+    """
+    try:
+        return template.format(**data)
+    except KeyError as e:
+        logger.warning(f"模板中包含未定义的变量：{e}")
+        # 降级替换：只替换存在的变量，保留不存在的变量格式
+        rendered = template
+        for key, value in data.items():
+            rendered = rendered.replace(f"{{{key}}}", str(value))
+        return rendered
+
+# ===================== 核心骰子逻辑 =====================
+def parse_dice_expression(expr: str) -> Tuple[int, int, int]:
+    """
+    解析骰子表达式，支持格式：数量d面数[±修正值]
+    示例：1d100 → (1,100,0)；2d6+3 → (2,6,3)；3d10-2 → (3,10,-2)
+    
+    Args:
+        expr: 骰子表达式字符串
+        
+    Returns:
+        (数量, 面数, 修正值)
+        
+    Raises:
+        ValueError: 无效表达式
+    """
+    pattern = r"^(\d+)d(\d+)([+-]\d+)?$"
+    match = re.match(pattern, expr.strip(), re.IGNORECASE)
+    if not match:
+        raise ValueError(f"无效的骰子表达式：{expr}，请使用「数量d面数[±修正值]」格式（如 1d100、2d6+3）")
+    
+    count = int(match.group(1))
+    face = int(match.group(2))
+    modifier = int(match.group(3)) if match.group(3) else 0
+    
+    if count <= 0 or count > 100:
+        raise ValueError(f"骰子数量{count}超出范围（仅支持1-100个骰子）")
+    if face <= 0 or face > 1000:
+        raise ValueError(f"骰子面数{face}超出范围（仅支持1-1000面骰子）")
+    
+    return count, face, modifier
+
+def roll_dice(count: int, face: int, modifier: int = 0) -> Tuple[List[int], int]:
+    """执行骰子投掷，返回单次结果列表和总计"""
+    rolls = [random.randint(1, face) for _ in range(count)]
+    total = sum(rolls) + modifier
+    return rolls, total
+
+# ===================== 角色属性生成逻辑 =====================
+def generate_character_attributes() -> Dict[str, int]:
+    """
+    生成跑团基础属性，公式：3D6×5
+    Returns:
+        字典格式：{属性缩写: 最终属性值}，如 {"STR": 50, "CON": 55...}
+    """
+    # 定义基础属性映射（显示名: 缩写）
+    attr_mapping = {
+        "力量(STR)": "STR",
+        "体质(CON)": "CON",
+        "体型(SIZ)": "SIZ",
+        "敏捷(DEX)": "DEX",
+        "外貌(APP)": "APP",
+        "智力(INT)": "INT",
+        "意志(POW)": "POW",
+        "教育(EDU)": "EDU",
+        "幸运(LUCK)": "LUCK"
+    }
+    attr_results = {}
+    
+    for full_name, short_name in attr_mapping.items():
+        # 3D6 投掷
+        rolls, sum_3d6 = roll_dice(3, 6)
+        # 最终值 = 3D6结果 ×5
+        final_value = sum_3d6 * 5
+        attr_results[short_name] = final_value
+    
+    # 计算总属性
+    attr_results["总属性"] = sum(attr_results.values())
+    return attr_results
+
+# ===================== LLM调用工具（中文指令） =====================
+class CoCDiceTool(BaseTool):
+    """CoC骰子工具 - 投掷克苏鲁跑团常用骰子"""
+
+    name = "coc_dice_tool"
+    description = "克苏鲁跑团骰子投掷工具，支持D100百分骰、D4/D6/D8/D10/D12/D20等多面骰，表达式格式为「数量d面数[±修正值]」（如1d100、2d6+3）"
+    parameters = [
+        ("dice_expr", ToolParamType.STRING, "骰子表达式（格式：数量d面数[±修正值]，如1d100、2d6+3）", True, None),
+    ]
+    available_for_llm = True
+
+    async def execute(self, function_args: dict[str, Any]) -> dict[str, Any]:
+        """执行骰子投掷（LLM调用入口）"""
+        dice_expr = function_args.get("dice_expr", "")
+        if not dice_expr:
+            error_msg = "错误：未提供骰子表达式"
+            await self.send_text(error_msg)
+            return {"name": self.name, "content": error_msg}
+
+        try:
+            # 1. 读取配置（热重载）
+            config = get_plugin_config()
+            # 2. 解析并投掷骰子
+            count, face, modifier = parse_dice_expression(dice_expr)
+            rolls, total = roll_dice(count, face, modifier)
+            
+            # 3. 组装掷骰数据（用于模板渲染）
+            roll_detail = " + ".join(map(str, rolls))
+            modifier_str = f"{'+' if modifier > 0 else '-'}{abs(modifier)}" if modifier != 0 else "无"
+            success_thresh = config["dice"]["success_threshold"]
+            fail_thresh = config["dice"]["fail_threshold"]
+            
+            # 判定结果（仅1d100生效）
+            judge_result = ""
+            if face == 100 and count == 1:
+                if total <= success_thresh:
+                    judge_result = "✨ 大成功！"
+                elif total >= fail_thresh:
+                    judge_result = "💥 大失败！"
+            
+            # 4. 组装模板数据
+            roll_data = {
+                "表达式": dice_expr,
+                "单次结果": roll_detail,
+                "修正值": modifier_str,
+                "总计": total,
+                "判定结果": judge_result.strip()
+            }
+            
+            # 5. 渲染模板
+            roll_template = config["dice"]["roll_template"]
+            result_msg = render_template(roll_template, roll_data)
+            
+            await self.send_text(result_msg)
+            return {"name": self.name, "content": result_msg}
+        
+        except ValueError as e:
+            error_msg = f"骰子投掷失败：{str(e)}"
+            await self.send_text(error_msg)
+            return {"name": self.name, "content": error_msg}
+        except Exception as e:
+            error_msg = f"未知错误：{str(e)}"
+            await self.send_text(error_msg)
+            return {"name": self.name, "content": error_msg}
+
+# ===================== 核心命令（/掷骰 /检定 /创建角色） =====================
+class CoCDiceCommand(BaseCommand):
+    """CoC骰子命令 - 响应中文指令：/掷骰 [骰子类型] /检定 [检定阈值] /创建角色"""
+
+    command_name = "coc_dice_command"
+    command_description = """克苏鲁骰子投掷/检定/角色创建（支持配置文件自定义输出模板）
+用法：
+1. /掷骰 1d100（投掷任意骰子）
+2. /检定 70（D100检定，阈值70）
+3. /创建角色（随机生成跑团基础属性，公式3D6×5）"""
+    # 匹配/掷骰 /检定 /创建角色命令
+    command_pattern = r"^/(掷骰|检定|创建角色)(\s+.*)?$"
+
+    async def execute(self) -> Tuple[bool, str, bool]:
+        """执行中文骰子指令（主动发送结果到聊天）"""
+        # 提取指令参数（去除指令前缀）
+        raw_params = self.message.raw_message.strip()
+        # 识别指令前缀
+        if "创建角色" in raw_params:
+            cmd_prefix = "/创建角色"
+        elif "检定" in raw_params:
+            cmd_prefix = "/检定"
+        else:
+            cmd_prefix = "/掷骰"
+        
+        params = raw_params[len(cmd_prefix):].strip()
+        # 读取配置（热重载）
+        config = get_plugin_config()
+        
+        # 处理「/创建角色」指令（无参数）
+        if cmd_prefix == "/创建角色":
+            if params:
+                error_msg = "❌ /创建角色命令无需参数！直接发送「/创建角色」即可生成随机属性"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                # 1. 生成角色属性
+                attr_data = generate_character_attributes()
+                # 2. 获取模板并渲染
+                char_template = config["character"]["output_template"]
+                role_msg = render_template(char_template, attr_data)
+                
+                await self.send_text(role_msg)
+                return True, role_msg, True
+            
+            except Exception as e:
+                logger.error(f"创建角色失败：{e}", exc_info=True)
+                error_msg = f"❌ 创建角色出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+        
+        # 处理「/检定」指令
+        elif cmd_prefix == "/检定":
+            if not params:
+                error_msg = "❌ 缺少参数！用法：\n/检定 70（D100检定，阈值70）"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            if not params.isdigit():
+                error_msg = "❌ 检定值必须是数字！示例：/检定 70"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                check_threshold = int(params)
+                if check_threshold < 1 or check_threshold > 99:
+                    error_msg = "❌ 检定值范围必须是1-99！"
+                    await self.send_text(error_msg)
+                    return False, error_msg, True
+                
+                # 1. 投掷D100
+                rolls, total = roll_dice(1, 100)
+                # 2. 判定结果
+                success_thresh = config["dice"]["success_threshold"]
+                fail_thresh = config["dice"]["fail_threshold"]
+                
+                if total <= success_thresh:
+                    judge_result = "✨ 大成功！"
+                elif total <= check_threshold:
+                    judge_result = "✅ 检定成功！"
+                elif total >= fail_thresh:
+                    judge_result = "💥 大失败！"
+                else:
+                    judge_result = "❌ 检定失败！"
+                
+                # 3. 组装检定数据（用于模板渲染）
+                check_data = {
+                    "阈值": check_threshold,
+                    "投掷结果": total,
+                    "判定结果": judge_result.strip()
+                }
+                
+                # 4. 渲染模板
+                check_template = config["dice"]["check_template"]
+                msg = render_template(check_template, check_data)
+                
+                await self.send_text(msg)
+                return True, msg, True
+            
+            except Exception as e:
+                logger.error(f"检定命令执行失败：{e}", exc_info=True)
+                error_msg = f"❌ 检定出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+        
+        # 处理「/掷骰」指令
+        else:
+            if not params:
+                error_msg = "❌ 缺少参数！用法：\n/掷骰 1d100（投掷任意骰子）"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            
+            try:
+                # 1. 解析并投掷骰子
+                count, face, modifier = parse_dice_expression(params)
+                rolls, total = roll_dice(count, face, modifier)
+                
+                # 2. 组装掷骰数据（用于模板渲染）
+                roll_detail = " + ".join(map(str, rolls))
+                modifier_str = f"{'+' if modifier > 0 else '-'}{abs(modifier)}" if modifier != 0 else "无"
+                success_thresh = config["dice"]["success_threshold"]
+                fail_thresh = config["dice"]["fail_threshold"]
+                
+                # 判定结果（仅1d100生效）
+                judge_result = ""
+                if face == 100 and count == 1:
+                    if total <= success_thresh:
+                        judge_result = "✨ 大成功！"
+                    elif total >= fail_thresh:
+                        judge_result = "💥 大失败！"
+                
+                # 3. 组装模板数据
+                roll_data = {
+                    "表达式": params,
+                    "单次结果": roll_detail,
+                    "修正值": modifier_str,
+                    "总计": total,
+                    "判定结果": judge_result.strip()
+                }
+                
+                # 4. 渲染模板
+                roll_template = config["dice"]["roll_template"]
+                msg = render_template(roll_template, roll_data)
+                
+                await self.send_text(msg)
+                return True, msg, True
+            
+            except ValueError as e:
+                error_msg = f"❌ 错误：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+            except Exception as e:
+                logger.error(f"掷骰命令执行失败：{e}", exc_info=True)
+                error_msg = f"❌ 掷骰出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+# ===================== 消息事件处理器（监听「掷骰」关键词） =====================
+class CoCDiceEventHandler(BaseEventHandler):
+    """CoC骰子事件处理器 - 监听包含「掷骰」的消息自动响应并发送结果到聊天"""
+
+    event_type = EventType.ON_MESSAGE
+    handler_name = "coc_dice_handler"
+    handler_description = "监听消息中的「掷骰」关键词，自动响应CoC骰子投掷并发送结果到聊天"
+
+    async def execute(self, message: MaiMessages | None) -> Tuple[bool, bool, str | None, None, None]:
+        """监听消息并自动投掷骰子，结果直接发送到聊天"""
+        if not message or not message.plain_text:
+            return True, True, None, None, None
+        
+        # 匹配「掷骰」关键词 + 表达式（如：掷骰 1d100）
+        msg_text = message.plain_text.strip()
+        if "掷骰" in msg_text:
+            match = re.search(r"掷骰\s+(\d+d\d+[+-]?\d*)", msg_text)
+            if match:
+                dice_expr = match.group(1)
+                try:
+                    # 1. 读取配置（热重载）
+                    config = get_plugin_config()
+                    # 2. 解析并投掷骰子
+                    count, face, modifier = parse_dice_expression(dice_expr)
+                    rolls, total = roll_dice(count, face, modifier)
+                    
+                    # 3. 组装掷骰数据
+                    roll_detail = " + ".join(map(str, rolls))
+                    modifier_str = f"{'+' if modifier > 0 else '-'}{abs(modifier)}" if modifier != 0 else "无"
+                    success_thresh = config["dice"]["success_threshold"]
+                    fail_thresh = config["dice"]["fail_threshold"]
+                    
+                    judge_result = ""
+                    if face == 100 and count == 1:
+                        if total <= success_thresh:
+                            judge_result = "✨ 大成功！"
+                        elif total >= fail_thresh:
+                            judge_result = "💥 大失败！"
+                    
+                    roll_data = {
+                        "表达式": dice_expr,
+                        "单次结果": roll_detail,
+                        "修正值": modifier_str,
+                        "总计": total,
+                        "判定结果": judge_result.strip()
+                    }
+                    
+                    # 4. 渲染模板
+                    roll_template = config["dice"]["roll_template"]
+                    auto_msg = render_template(roll_template, roll_data)
+                    
+                    await self.send_text(auto_msg)
+                except ValueError as e:
+                    error_msg = f"❌ 自动投掷失败：{str(e)}"
+                    await self.send_text(error_msg)
+        
+        return True, True, None, None, None
+
+# ===================== 插件注册 =====================
+@register_plugin
+class CoCDicePlugin(BasePlugin):
+    """CoC骰子插件 - 克苏鲁跑团专用骰子工具（全命令支持自定义模板+热重载）"""
+
+    # 插件基本信息
+    plugin_name: str = "coc_dice_plugin"
+    enable_plugin: bool = True
+    dependencies: List[str] = []
+    python_dependencies: List[str] = []
+    config_file_name: str = "config.toml"
+
+    # 配置Schema（完整模板配置说明）
+    config_section_descriptions = {
+        "plugin": "插件基础配置",
+        "dice": "骰子/检定相关配置（含自定义模板）",
+        "character": "角色创建模板配置"
+    }
+
+    config_schema: dict = {
+        "plugin": {
+            "config_version": ConfigField(type=str, default="1.0.0", description="配置文件版本"),
+            "enabled": ConfigField(type=bool, default=True, description="是否启用插件")
+        },
+        "dice": {
+            "show_detail": ConfigField(type=bool, default=True, description="是否显示单次投掷详情"),
+            "success_threshold": ConfigField(type=int, default=5, description="D100大成功阈值（≤该值为大成功）"),
+            "fail_threshold": ConfigField(type=int, default=96, description="D100大失败阈值（≥该值为大失败）"),
+            "default_message": ConfigField(type=str, default="🎲 克苏鲁骰子投掷完成！", description="默认提示消息"),
+            "roll_template": ConfigField(
+                type=str,
+                default="""🎲 投掷「{表达式}」结果：
+单次投掷结果：{单次结果}
+修正值：{修正值}
+总计：{总计}
+{判定结果}""",
+                description="掷骰命令输出模板，支持变量：{表达式}/{单次结果}/{修正值}/{总计}/{判定结果}"
+            ),
+            "check_template": ConfigField(
+                type=str,
+                default="""🎲 克苏鲁检定（阈值：{阈值}）
+投掷结果：{投掷结果}
+{判定结果}""",
+                description="检定命令输出模板，支持变量：{阈值}/{投掷结果}/{判定结果}"
+            )
+        },
+        "character": {
+            "output_template": ConfigField(
+                type=str,
+                default="""🎭 您的角色基础属性为：
+
+🔹 力量(STR)：{STR}
+🔹 体质(CON)：{CON}
+🔹 体型(SIZ)：{SIZ}
+🔹 敏捷(DEX)：{DEX}
+🔹 外貌(APP)：{APP}
+🔹 智力(INT)：{INT}
+🔹 意志(POW)：{POW}
+🔹 教育(EDU)：{EDU}
+🔹 幸运(LUCK)：{LUCK}
+
+📊 属性总值：{总属性}""",
+                description="角色属性输出模板，支持变量：{STR}/{CON}/{SIZ}/{DEX}/{APP}/{INT}/{POW}/{EDU}/{LUCK}/{总属性}"
+            )
+        }
+    }
+
+    def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
+        """注册插件组件"""
+        return [
+            (CoCDiceTool.get_tool_info(), CoCDiceTool),          
+            (CoCDiceCommand.get_command_info(), CoCDiceCommand),
+            (CoCDiceEventHandler.get_handler_info(), CoCDiceEventHandler),
+        ]
