@@ -594,7 +594,7 @@ class CoCDiceCommand(BaseCommand):
                 save_character_data(USER_CHARACTER_DATA)
                 
                 role_msg = render_template(config["character"]["output_template"], attr_data)
-                role_msg += "\n\n✅ 角色已绑定！支持/{力量}/{体质}等指令自动检定，/r=/掷骰、/rd=/检定、/st=/导入修改属性（无需=）。"
+                role_msg += "\n\n✅ 角色已绑定！支持/{力量}/{体质}等指令自动检定，/r /掷骰、/rd /检定、/st /导入 修改属性 。"
                 
                 await self.send_text(role_msg)
                 return True, role_msg, True
