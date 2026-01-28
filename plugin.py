@@ -22,8 +22,7 @@ logger = get_logger("coc_dice_plugin")
 # ===================== 角色数据持久化存储 =====================
 CHAR_DATA_PATH = os.path.join(os.path.dirname(__file__), "character_data.json")
 
-# 修改：返回值类型改为 Dict[str, Any] 以支持存储昵称字符串
-def load_character_data() -> Dict[str, Dict[str, Any]]:
+def load_character_data() -> Dict[str, Dict[str, int]]:
     """加载用户角色数据（持久化）"""
     try:
         if os.path.exists(CHAR_DATA_PATH):
@@ -34,8 +33,7 @@ def load_character_data() -> Dict[str, Dict[str, Any]]:
         logger.error(f"加载角色数据失败：{e}")
         return {}
 
-# 修改：输入参数类型改为 Dict[str, Any]
-def save_character_data(char_data: Dict[str, Dict[str, Any]]) -> bool:
+def save_character_data(char_data: Dict[str, Dict[str, int]]) -> bool:
     """保存用户角色数据（持久化）"""
     try:
         os.makedirs(os.path.dirname(__file__), exist_ok=True)
@@ -377,14 +375,10 @@ def get_derived_attr_value(attr_name: str, char_data: Dict[str, int]) -> Any:
         return None
 
 # ===================== 角色属性生成/格式化 =====================
-# 修改：增加 nickname 参数并存储
-def generate_character_attributes(nickname: str) -> Dict[str, Any]:
-    """生成预设基础属性（含昵称）"""
+def generate_character_attributes() -> Dict[str, int]:
+    """生成预设基础属性（修改SIZ/INT/EDU公式为(2D6+6)×5）"""
     attr_results = {}
     
-    # 存储角色昵称
-    attr_results["name"] = nickname
-
     # HP/MP/SAN默认值
     attr_results["HP"] = 12
     attr_results["MP"] = 10
@@ -464,8 +458,7 @@ def format_character_attributes(char_data: Dict[str, int]) -> Tuple[str, str, in
 
 def get_character_skills(char_data: Dict[str, int]) -> Tuple[List[str], int]:
     """提取角色技能（非基础属性/衍生属性/统计项）"""
-    # 修改：排除 "name" 字段，防止被误识别为技能
-    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性", "name"]) | FORBIDDEN_ATTRS
+    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"]) | FORBIDDEN_ATTRS
     skill_lines = []
     for key, value in char_data.items():
         if key not in exclude_keys and key not in DERIVED_ATTRS:
@@ -609,42 +602,50 @@ class CoCDiceTool(BaseTool):
 class CoCDiceCommand(BaseCommand):
     """核心命令处理类"""
     command_name = "coc_dice_command"
-    # 修改：更新帮助文案，增加 /nn 和 /创建角色 [昵称] 说明
     command_description = f"""克苏鲁骰子/角色管理插件
 用法：
-1. /r [表达式] [原因] → 投掷骰子
-2. /rd [参数] [原因] → 检定
-3. /sc [成功/失败] [原因] → SAN Check
-4. /创建角色 [昵称] → 生成属性（若未指定昵称，默认使用用户昵称）
-5. /nn [新昵称] → 修改当前角色的昵称
-6. /查询角色 → 查看属性
-7. /查询技能 → 查看技能
-8. /st [属性数值] → 导入/修改属性
-9. /删除 [属性名] → 删除属性
-10. /删除角色 → 清空数据
-支持属性：{', '.join(BASE_ATTR_NAMES)}"""
+1. /r [表达式] [原因] → 投掷骰子（如/r d100 探索密室）
+2. /rd [参数] [原因] → 检定（支持三种模式）
+   - 模式1：/rd [阈值] [原因]（如/rd 70 躲避陷阱）
+   - 模式2：/rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
+   - 模式3：/rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
+     - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
+3. /sc [成功扣除/失败扣除] [原因] → SAN值（理智）检定（如/sc 1d5/1d6 目睹怪物、/sc 5/6 看到诡异场景）
+   - 规则：以当前SAN值为阈值掷D100
+     - 结果 < SAN值：检定成功，扣除「成功扣除」值（1d5/5）
+     - 结果 > SAN值：检定失败，扣除「失败扣除」值（1d6/6）
+     - SAN值最低为0，不会出现负数
+4. /创建角色 → 生成预设基础属性（含HP/MP/SAN）
+5. /查询角色 → 查看所有属性（基础属性+衍生属性）
+6. /查询技能 → 查看所有自定义技能（非属性项）
+   /查询技能 [属性/技能名] → 单独查看指定技能/属性的值（如/查询技能 感知、/查询技能 闪避）
+7. /st/导入 [属性数值] → 新增/修改属性/技能（无空格格式，如/st 力量80敏捷75，值范围0-200）
+   ⚠️ 禁止修改：伤害加值、闪避、移动力（自动计算的衍生属性）
+8. /删除/ del [属性/技能名] → 删除/重置属性/技能
+   - 基础属性：重置为默认值（如/删除 力量）
+   - 自定义技能：直接删除（如/删除 感知）
+   ⚠️ 禁止删除：伤害加值、闪避、移动力（自动计算的衍生属性）
+9. /删除角色/ del_all → 删除整个角色数据（所有属性+技能清空）
+支持的基础属性：{', '.join(BASE_ATTR_NAMES)}
+衍生属性（自动计算，不可手动修改）：{', '.join(DERIVED_ATTRS.keys())}
+属性/技能值范围：0-200"""
 
-    # 修改：增加 nn 指令匹配
-    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|sc|san检定|nn)(\s+.*)?$"
+    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|sc|san检定)(\s+.*)?$"
 
     async def execute(self) -> Tuple[bool, str, bool]:
         global USER_CHARACTER_DATA
 
-        # 提取用户ID和昵称
+        # 提取用户ID
         user_id = None
-        user_nickname = "调查员"  # 默认昵称
         try:
             if (hasattr(self.message, 'message_info') and
-                hasattr(self.message.message_info, 'user_info')):
-                info = self.message.message_info.user_info
-                if hasattr(info, 'user_id'):
-                    user_id = str(info.user_id)
-                if hasattr(info, 'user_nickname') and info.user_nickname:
-                    user_nickname = info.user_nickname
+                hasattr(self.message.message_info, 'user_info') and
+                hasattr(self.message.message_info.user_info, 'user_id')):
+                user_id = str(self.message.message_info.user_info.user_id)
             else:
                 logger.error("无法提取用户ID：属性层级缺失")
         except Exception as e:
-            logger.error(f"提取用户信息失败：{e}")
+            logger.error(f"提取用户ID失败：{e}")
 
         if not user_id:
             error_msg = "❌ 无法获取你的用户ID，无法执行指令！"
@@ -654,11 +655,10 @@ class CoCDiceCommand(BaseCommand):
         # 解析指令
         raw_msg = self.message.raw_message.strip()
         cmd_prefix = re.match(r"^/(\w+)", raw_msg).group(1) if re.match(r"^/(\w+)", raw_msg) else ""
-        # ... (快捷指令映射逻辑保持不变) ...
         if cmd_prefix in SHORT_CMD_MAP:
-             original_cmd = SHORT_CMD_MAP[cmd_prefix]
-             raw_msg = raw_msg.replace(f"/{cmd_prefix}", f"/{original_cmd}", 1)
-             cmd_prefix = original_cmd
+            original_cmd = SHORT_CMD_MAP[cmd_prefix]
+            raw_msg = raw_msg.replace(f"/{cmd_prefix}", f"/{original_cmd}", 1)
+            cmd_prefix = original_cmd
 
         params = raw_msg[len(f"/{cmd_prefix}"):].strip()
         config = get_plugin_config()
@@ -1003,21 +1003,19 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-# ========== 修改：处理 /创建角色 指令 ==========
+        # ========== 6. 处理/创建角色指令 ==========
         elif cmd_prefix == "创建角色":
-            # 如果 params 存在，则作为自定义昵称，否则使用 user_nickname
-            custom_name = params.strip()
-            final_name = custom_name if custom_name else user_nickname
+            if params:
+                error_msg = "❌ /创建角色命令无需参数！"
+                await self.send_text(error_msg)
+                return False, error_msg, True
 
             try:
-                # 传入 final_name
-                attr_data = generate_character_attributes(final_name)
+                attr_data = generate_character_attributes()
                 USER_CHARACTER_DATA[user_id] = attr_data
                 save_character_data(USER_CHARACTER_DATA)
 
                 base_attr_lines = []
-                # 显示角色名
-                base_attr_lines.append(f"👤 **角色**：{final_name}")
                 for attr_name, (short_name, full_name) in BASE_ATTR_MAP.items():
                     base_attr_lines.append(f"🔹 {full_name}：{attr_data.get(short_name, 0)}")
                 base_attr_str = "\n".join(base_attr_lines)
@@ -1044,9 +1042,13 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-# ========== 修改：处理 /查询角色 指令 ==========
+        # ========== 7. 处理/查询角色指令 ==========
         elif cmd_prefix == "查询角色":
-            # ... (前置检查保持不变) ...
+            if params:
+                error_msg = "❌ /查询角色命令无需参数！"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
             if user_id not in USER_CHARACTER_DATA:
                 error_msg = "❌ 你还未创建角色！可发送/创建角色或/st指令自动创建。"
                 await self.send_text(error_msg)
@@ -1055,15 +1057,9 @@ class CoCDiceCommand(BaseCommand):
             try:
                 char_data = USER_CHARACTER_DATA[user_id]
                 base_attr_str, derived_attr_str, base_total, _ = format_character_attributes(char_data)
-                
-                # 获取角色名，默认为"调查员"
-                char_name = char_data.get("name", "调查员")
-                
-                # 在输出头部增加角色名显示
-                header = f"👤 **当前角色**：{char_name}\n"
-                
+
                 query_data = {
-                    "基础属性列表": header + base_attr_str,
+                    "基础属性列表": base_attr_str,
                     "衍生属性列表": derived_attr_str,
                     "基础总属性": base_total
                 }
@@ -1171,28 +1167,6 @@ class CoCDiceCommand(BaseCommand):
                 error_msg = f"❌ 掷骰出错：{str(e)}"
                 await self.send_text(error_msg)
                 return False, error_msg, True
-
-        # ========== 增加：处理 /nn 指令 ==========
-        if cmd_prefix == "nn":
-            new_name = params.strip()
-            if not new_name:
-                error_msg = "❌ 请输入新昵称！用法：/nn [新昵称]"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            if user_id not in USER_CHARACTER_DATA:
-                error_msg = "❌ 你还未创建角色，无法修改昵称！请先发送 /创建角色"
-                await self.send_text(error_msg)
-                return False, error_msg, True
-            
-            old_name = USER_CHARACTER_DATA[user_id].get("name", "调查员")
-            USER_CHARACTER_DATA[user_id]["name"] = new_name
-            save_character_data(USER_CHARACTER_DATA)
-            
-            msg = f"✅ 角色昵称已修改：{old_name} → {new_name}"
-            await self.send_text(msg)
-            return True, msg, True
-
 
         # ========== 非本插件指令，交由其他插件处理 ==========
         else:
