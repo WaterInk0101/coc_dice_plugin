@@ -82,7 +82,8 @@ SHORT_CMD_MAP = {
     "st": "导入",
     "del": "删除",
     "del_all": "删除角色",
-    "qs": "查询技能"
+    "qs": "查询技能",
+    "sc": "san检定"  # 新增SAN检定快捷指令
 }
 
 # ===================== 配置文件相关 =====================
@@ -95,14 +96,14 @@ def get_plugin_config() -> Dict[str, Any]:
             "show_detail": True,
             "success_threshold": 5,
             "fail_threshold": 96,
-            "default_message": "🎲 克苏鲁骰子投掷完成！",
+            "default_message": "🎲 投掷完成！",
             "roll_template": """🎲 投掷「{表达式}」结果：
 {原因说明}
 单次结果：{单次结果}
 修正值：{修正值}
 总计：{总计}
 {判定结果}""",
-            "check_template": """🎲 克苏鲁检定（阈值：{阈值}）
+            "check_template": """🎲 检定（阈值：{阈值}）
 {原因说明}
 投掷结果：{投掷结果}
 {判定结果}""",
@@ -111,7 +112,16 @@ def get_plugin_config() -> Dict[str, Any]:
 你的伤害加值表达式：{damage_bonus_expr}
 实时计算伤害加值：{damage_bonus_value}（作为检定阈值）
 投掷结果：{roll_result}
-{judge_result}"""
+{judge_result}""",
+            "san_check_template": """🎲 🌀 SAN值（理智）检定
+{reason_desc}
+你的当前SAN值：{current_san}（检定阈值）
+D100投掷结果：{roll_result}
+{judge_result}
+➡️ 扣除SAN值：{deduct_value}（{deduct_type}）
+🔹 扣除前SAN值：{before_san}
+🔹 扣除后SAN值：{after_san}
+⚠️ SAN值最低为0，不会出现负数"""
         },
         "character": {
             "output_template": """🎭 随机生成跑团基础属性：
@@ -291,6 +301,26 @@ def parse_damage_bonus_value(damage_bonus_str: str) -> int:
     
     # 解析失败默认返回0
     return 0
+
+def parse_san_deduct_value(expr: str) -> int:
+    """
+    解析SAN值扣除值（支持骰子表达式如1d5或纯数字如5）
+    :param expr: 扣除值表达式（1d5/5/1d6/6等）
+    :return: 实际扣除的数值
+    """
+    # 处理纯数字
+    if expr.lstrip('-').isdigit():
+        val = int(expr)
+        return max(val, 1)  # 确保至少扣除1点
+    
+    # 处理骰子表达式
+    try:
+        count, face, modifier = parse_dice_expression(expr)
+        rolls, total = roll_dice(count, face, modifier)
+        return max(total, 1)  # 确保至少扣除1点
+    except Exception as e:
+        logger.error(f"解析SAN扣除值失败：{expr}，错误：{e}")
+        return 1  # 解析失败默认扣除1点
 
 # ===================== 衍生属性计算函数（纯实时计算，无存储值） =====================
 def calculate_damage_bonus(str_value: int, siz_value: int) -> str:
@@ -580,22 +610,27 @@ class CoCDiceCommand(BaseCommand):
    - 模式2：/rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
    - 模式3：/rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
      - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
-3. /创建角色 → 生成预设基础属性（含HP/MP/SAN）
-4. /查询角色 → 查看所有属性（基础属性+衍生属性）
-5. /查询技能 → 查看所有自定义技能（非属性项）
+3. /sc [成功扣除/失败扣除] [原因] → SAN值（理智）检定（如/sc 1d5/1d6 目睹怪物、/sc 5/6 看到诡异场景）
+   - 规则：以当前SAN值为阈值掷D100
+     - 结果 < SAN值：检定成功，扣除「成功扣除」值（1d5/5）
+     - 结果 > SAN值：检定失败，扣除「失败扣除」值（1d6/6）
+     - SAN值最低为0，不会出现负数
+4. /创建角色 → 生成预设基础属性（含HP/MP/SAN）
+5. /查询角色 → 查看所有属性（基础属性+衍生属性）
+6. /查询技能 → 查看所有自定义技能（非属性项）
    /查询技能 [属性/技能名] → 单独查看指定技能/属性的值（如/查询技能 感知、/查询技能 闪避）
-6. /st/导入 [属性数值] → 新增/修改属性/技能（无空格格式，如/st 力量80敏捷75，值范围0-200）
+7. /st/导入 [属性数值] → 新增/修改属性/技能（无空格格式，如/st 力量80敏捷75，值范围0-200）
    ⚠️ 禁止修改：伤害加值、闪避、移动力（自动计算的衍生属性）
-7. /删除/ del [属性/技能名] → 删除/重置属性/技能
+8. /删除/ del [属性/技能名] → 删除/重置属性/技能
    - 基础属性：重置为默认值（如/删除 力量）
    - 自定义技能：直接删除（如/删除 感知）
    ⚠️ 禁止删除：伤害加值、闪避、移动力（自动计算的衍生属性）
-8. /删除角色/ del_all → 删除整个角色数据（所有属性+技能清空）
+9. /删除角色/ del_all → 删除整个角色数据（所有属性+技能清空）
 支持的基础属性：{', '.join(BASE_ATTR_NAMES)}
 衍生属性（自动计算，不可手动修改）：{', '.join(DERIVED_ATTRS.keys())}
 属性/技能值范围：0-200"""
 
-    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs)(\s+.*)?$"
+    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|sc|san检定)(\s+.*)?$"
 
     async def execute(self) -> Tuple[bool, str, bool]:
         global USER_CHARACTER_DATA
@@ -690,7 +725,7 @@ class CoCDiceCommand(BaseCommand):
 2. /rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
 3. /rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
    - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
-⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"""
+"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -788,7 +823,7 @@ class CoCDiceCommand(BaseCommand):
 你的{attr_name}{attr_type}值：{{阈值}}
 投掷结果：{{投掷结果}}
 {{判定结果}}
-⚠️ 若为伤害加值/闪避/移动力，该值为自动计算，不可手动修改"""
+"""
                     check_data = {
                         "阈值": check_threshold,
                         "reason_desc": reason_desc,
@@ -814,7 +849,102 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 3. 处理/删除指令 ==========
+        # ========== 3. 新增：处理/san检定指令 ==========
+        elif cmd_prefix == "san检定":
+            # 拆分参数：扣除规则 + 原因
+            if not params.strip():
+                error_msg = """❌ 缺少SAN检定参数！支持用法：
+/sc [成功扣除/失败扣除] [原因]（如/sc 1d5/1d6 目睹怪物、/sc 5/6 看到诡异场景）
+规则：
+- 结果 < SAN值：检定成功，扣除「成功扣除」值
+- 结果 > SAN值：检定失败，扣除「失败扣除」值
+"""
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+            # 拆分扣除规则和原因（第一个参数是扣除规则，剩余是原因）
+            rule_part, reason = split_check_params(params)
+            if not rule_part or "/" not in rule_part:
+                error_msg = """❌ SAN检定参数格式错误！
+正确格式：/sc 成功扣除/失败扣除 [原因]（如/sc 1d5/1d6 目睹怪物、/sc 5/6 看到诡异场景）
+- 成功扣除：检定成功时扣除的SAN值（支持骰子表达式/纯数字）
+- 失败扣除：检定失败时扣除的SAN值（支持骰子表达式/纯数字）"""
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+            # 解析成功/失败扣除值
+            success_deduct_expr, fail_deduct_expr = rule_part.split("/", 1)
+            success_deduct_expr = success_deduct_expr.strip()
+            fail_deduct_expr = fail_deduct_expr.strip()
+
+            try:
+                # 检查角色是否存在
+                if user_id not in USER_CHARACTER_DATA:
+                    error_msg = "❌ 你还未创建角色！无法进行SAN值检定，请先发送/创建角色。"
+                    await self.send_text(error_msg)
+                    return False, error_msg, True
+
+                user_char = USER_CHARACTER_DATA[user_id].copy()
+                current_san = user_char.get("SAN", 0)
+                if current_san <= 0:
+                    error_msg = f"❌ 你的当前SAN值为{current_san}，无法进行SAN检定！"
+                    await self.send_text(error_msg)
+                    return False, error_msg, True
+
+                # 执行D100检定
+                rolls, roll_result = roll_dice(1, 100)
+                before_san = current_san
+                deduct_value = 0
+                deduct_type = ""
+                judge_result = ""
+
+                # 判断检定结果
+                if roll_result < current_san:
+                    # 检定成功
+                    judge_result = "✅ SAN检定成功！"
+                    deduct_value = parse_san_deduct_value(success_deduct_expr)
+                    deduct_type = f"成功扣除（{success_deduct_expr}）"
+                else:
+                    # 检定失败
+                    judge_result = "❌ SAN检定失败！"
+                    deduct_value = parse_san_deduct_value(fail_deduct_expr)
+                    deduct_type = f"失败扣除（{fail_deduct_expr}）"
+
+                # 计算扣除后的SAN值（最低为0）
+                after_san = max(before_san - deduct_value, 0)
+                user_char["SAN"] = after_san
+
+                # 重新计算基础总值（不影响，仅更新SAN值）
+                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+                user_char["基础总属性"] = base_total
+
+                # 保存修改后的角色数据
+                USER_CHARACTER_DATA[user_id] = user_char
+                save_character_data(USER_CHARACTER_DATA)
+
+                # 构建提示信息
+                reason_desc = f"因为{reason}所以进行" if reason else "进行"
+                san_data = {
+                    "reason_desc": reason_desc,
+                    "current_san": current_san,
+                    "roll_result": roll_result,
+                    "judge_result": judge_result,
+                    "deduct_value": deduct_value,
+                    "deduct_type": deduct_type,
+                    "before_san": before_san,
+                    "after_san": after_san
+                }
+                msg = render_template(config["dice"]["san_check_template"], san_data)
+
+                await self.send_text(msg)
+                return True, msg, True
+
+            except Exception as e:
+                error_msg = f"❌ SAN检定出错：{str(e)}"
+                await self.send_text(error_msg)
+                return False, error_msg, True
+
+        # ========== 4. 处理/删除指令 ==========
         elif cmd_prefix == "删除":
             attr_name = params.strip()
             if not attr_name:
@@ -851,7 +981,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 4. 处理/删除角色指令 ==========
+        # ========== 5. 处理/删除角色指令 ==========
         elif cmd_prefix == "删除角色":
             if params:
                 error_msg = "❌ /删除角色命令无需参数！直接发送即可删除整个角色数据。"
@@ -873,7 +1003,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 5. 处理/创建角色指令 ==========
+        # ========== 6. 处理/创建角色指令 ==========
         elif cmd_prefix == "创建角色":
             if params:
                 error_msg = "❌ /创建角色命令无需参数！"
@@ -912,7 +1042,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 6. 处理/查询角色指令 ==========
+        # ========== 7. 处理/查询角色指令 ==========
         elif cmd_prefix == "查询角色":
             if params:
                 error_msg = "❌ /查询角色命令无需参数！"
@@ -942,7 +1072,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 7. 处理/查询技能指令（新增单个查询逻辑） ==========
+        # ========== 8. 处理/查询技能指令（新增单个查询逻辑） ==========
         elif cmd_prefix == "查询技能":
             skill_name = params.strip()
             
@@ -967,7 +1097,7 @@ class CoCDiceCommand(BaseCommand):
                         await self.send_text(single_msg)
                         return True, single_msg, True
                     else:
-                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。\n⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"
+                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。"
                         await self.send_text(error_msg)
                         return False, error_msg, True
                 # 无参数：查询所有技能
@@ -975,7 +1105,7 @@ class CoCDiceCommand(BaseCommand):
                     skill_lines, skill_count = get_character_skills(char_data)
                     
                     if not skill_lines:
-                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 力量80 感知75）\n⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"
+                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 力量80 感知75）"
                     else:
                         skill_list = "\n".join(skill_lines)
 
@@ -992,7 +1122,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 8. 处理/掷骰指令 ==========
+        # ========== 9. 处理/掷骰指令 ==========
         elif cmd_prefix == "掷骰":
             dice_expr, reason = split_check_params(params)
             if not dice_expr:
@@ -1069,10 +1199,11 @@ class CoCDicePlugin(BasePlugin):
             "show_detail": ConfigField(type=bool, default=True, description="显示投掷详情"),
             "success_threshold": ConfigField(type=int, default=5, description="D100大成功阈值"),
             "fail_threshold": ConfigField(type=int, default=96, description="D100大失败阈值"),
-            "default_message": ConfigField(type=str, default="🎲 骰子投掷完成！", description="默认提示"),
+            "default_message": ConfigField(type=str, default="🎲 克苏鲁骰子投掷完成！", description="默认提示"),
             "roll_template": ConfigField(type=str, default=get_plugin_config()["dice"]["roll_template"], description="掷骰模板"),
             "check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["check_template"], description="检定模板"),
-            "damage_bonus_check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["damage_bonus_check_template"], description="伤害加值检定专用模板")
+            "damage_bonus_check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["damage_bonus_check_template"], description="伤害加值检定专用模板"),
+            "san_check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["san_check_template"], description="SAN值检定专用模板")
         },
         "character": {
             "output_template": ConfigField(type=str, default=get_plugin_config()["character"]["output_template"], description="创建角色模板"),
