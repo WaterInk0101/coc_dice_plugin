@@ -62,12 +62,14 @@ BASE_ATTR_MAP = {
     "教育": ("EDU", "📚教育(EDU)"),
     "幸运": ("LUCK", "🍀幸运(LUCK)")
 }
-# 衍生属性（自动计算，无存储值）
+# 衍生属性（自动计算，无存储值，不可手动修改）
 DERIVED_ATTRS = {
     "伤害加值": "💥伤害加值",
     "闪避": "🤸闪避",
     "移动力": "⚡移动力(MOV)"
 }
+# 禁止手动修改的属性列表（衍生属性）
+FORBIDDEN_ATTRS = set(DERIVED_ATTRS.keys())
 
 BASE_ATTR_NAMES = set(BASE_ATTR_MAP.keys())
 BASE_ATTR_TO_SHORT = {name: short for name, (short, full) in BASE_ATTR_MAP.items()}
@@ -115,19 +117,22 @@ def get_plugin_config() -> Dict[str, Any]:
             "output_template": """🎭 随机生成跑团基础属性：
 {属性列表}
 📊 预设属性总值：{总属性}
-💡 支持导入自定义属性（如/导入 力量80 感知75）""",
+💡 支持导入自定义属性（如/导入 力量80 感知75）
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改""",
             "query_template": """🎭 你的绑定角色属性：
 {基础属性列表}
 {衍生属性列表}
 📊 基础属性总数：{基础总属性}
-💡 发送「/查询技能」查看所有技能，/rd [属性/技能名] 可检定任意项""",
+💡 发送「/查询技能」查看所有技能，/rd [属性/技能名] 可检定任意项
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改""",
             "skill_query_template": """🎭 你的角色技能列表：
 {技能列表}
 📊 技能总数：{skill_count}
 💡 发送「/查询角色」查看属性，/rd [技能名] 可检定技能""",
             "single_skill_template": """🎭 角色技能/属性查询结果：
 🔹 {skill_name}：{skill_value}
-💡 发送「/查询技能」查看所有技能，/rd {skill_name} 可检定该技能/属性"""
+💡 发送「/查询技能」查看所有技能，/rd {skill_name} 可检定该技能/属性
+⚠️ 若为伤害加值/闪避/移动力，该值为自动计算，不可手动修改"""
         },
         "import_attr": {
             "success_template": """✅ 角色属性修改/新增成功！
@@ -135,13 +140,15 @@ def get_plugin_config() -> Dict[str, Any]:
 修改/新增的属性：
 {修改列表}
 📊 当前基础属性总值：{基础总属性}
-💡 发送「/查询角色」查看完整属性，/查询技能 查看技能""",
+💡 发送「/查询角色」查看完整属性，/查询技能 查看技能
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改""",
             "auto_create_tip": "🔔 检测到你未创建角色，已自动生成预设属性并新增/覆盖指定值！",
             "update_tip": "🔔 已新增/覆盖你指定的属性值！",
             "error_template": """❌ 属性修改失败：
 {错误原因}
 💡 正确格式：/st 力量80敏捷75 或 /st 力量80 感知75（属性值范围0-200）
-💡 基础属性：{基础属性列表}"""
+💡 基础属性：{基础属性列表}
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"""
         },
         "delete_attr": {
             "success_template": """✅ 属性操作成功！
@@ -154,7 +161,8 @@ def get_plugin_config() -> Dict[str, Any]:
 {错误原因}
 💡 支持的操作：
 1. /删除 [基础属性名] → 重置为默认值（如/删除 力量）
-2. /删除 [自定义技能名] → 直接删除（如/删除 感知）"""
+2. /删除 [自定义技能名] → 直接删除（如/删除 感知）
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动删除/修改"""
         }
     }
 
@@ -215,6 +223,7 @@ def split_check_params(params: str) -> Tuple[str, str]:
 def parse_import_attr_params(params: str) -> Dict[str, int]:
     """
     解析导入属性参数（支持无空格格式，如力量21敏捷43，值范围0-200）
+    禁止解析伤害加值/闪避/移动力（自动计算属性）
     """
     if not params.strip():
         raise ValueError("未输入任何属性参数")
@@ -238,6 +247,10 @@ def parse_import_attr_params(params: str) -> Dict[str, int]:
             attr_name = match.group(1).strip()
             value_str = match.group(2).strip()
             remaining = remaining[match.end():]  # 截取剩余部分继续解析
+            
+            # 检查是否为禁止手动修改的属性
+            if attr_name in FORBIDDEN_ATTRS:
+                raise ValueError(f"「{attr_name}」是自动计算的衍生属性，不可手动修改！")
             
             # 校验数值范围（0-200）
             if not value_str.isdigit():
@@ -396,9 +409,9 @@ def format_character_attributes(char_data: Dict[str, int]) -> Tuple[str, str, in
     movement = calculate_movement(dex_val, str_val, siz_val)
     
     derived_attr_lines = [
-        f"🔹 {DERIVED_ATTRS['伤害加值']}：{damage_bonus}",
-        f"🔹 {DERIVED_ATTRS['闪避']}：{dodge}",
-        f"🔹 {DERIVED_ATTRS['移动力']}：{movement}"
+        f"🔹 {DERIVED_ATTRS['伤害加值']}：{damage_bonus}（自动计算）",
+        f"🔹 {DERIVED_ATTRS['闪避']}：{dodge}（自动计算）",
+        f"🔹 {DERIVED_ATTRS['移动力']}：{movement}（自动计算）"
     ]
     
     # 整理衍生属性值
@@ -415,7 +428,7 @@ def format_character_attributes(char_data: Dict[str, int]) -> Tuple[str, str, in
 
 def get_character_skills(char_data: Dict[str, int]) -> Tuple[List[str], int]:
     """提取角色技能（非基础属性/衍生属性/统计项）"""
-    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"])
+    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"]) | FORBIDDEN_ATTRS
     skill_lines = []
     for key, value in char_data.items():
         if key not in exclude_keys and key not in DERIVED_ATTRS:
@@ -438,14 +451,14 @@ def get_single_skill_value(skill_name: str, char_data: Dict[str, int]) -> Tuple[
         full_name = BASE_ATTR_MAP[skill_name][1]
         return True, full_name, value
     
-    # 2. 检查衍生属性
+    # 2. 检查衍生属性（自动计算，不可修改）
     if skill_name in DERIVED_ATTRS:
         value = get_derived_attr_value(skill_name, char_data)
         full_name = DERIVED_ATTRS[skill_name]
         return True, full_name, value
     
     # 3. 检查自定义技能
-    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"])
+    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"]) | FORBIDDEN_ATTRS
     if skill_name in char_data and skill_name not in exclude_keys and skill_name not in DERIVED_ATTRS:
         value = char_data[skill_name]
         return True, skill_name, value
@@ -455,9 +468,13 @@ def get_single_skill_value(skill_name: str, char_data: Dict[str, int]) -> Tuple[
 
 # ===================== 删除属性/角色核心函数 =====================
 def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str, Dict[str, int]]:
-    """删除/重置角色属性/技能"""
+    """删除/重置角色属性/技能（禁止删除衍生属性）"""
     if user_id not in USER_CHARACTER_DATA:
         return False, "你还未创建角色，无属性/技能可删除！", {}
+
+    # 检查是否为禁止删除的衍生属性
+    if attr_name in FORBIDDEN_ATTRS:
+        return False, f"「{attr_name}」是自动计算的衍生属性，不可手动删除/修改！", {}
 
     user_char = USER_CHARACTER_DATA[user_id].copy()
 
@@ -483,11 +500,7 @@ def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str,
 
         return True, f"技能-{attr_name}已删除（原值：{old_value}）", user_char
 
-    # 3. 衍生属性（无法删除/修改）
-    elif attr_name in DERIVED_ATTRS:
-        return False, f"「{attr_name}」是衍生属性，无需删除/修改！", user_char
-
-    # 4. 属性/技能不存在
+    # 3. 属性/技能不存在
     else:
         return False, f"未找到属性/技能「{attr_name}」，无法删除！", user_char
 
@@ -572,13 +585,14 @@ class CoCDiceCommand(BaseCommand):
 5. /查询技能 → 查看所有自定义技能（非属性项）
    /查询技能 [属性/技能名] → 单独查看指定技能/属性的值（如/查询技能 感知、/查询技能 闪避）
 6. /st/导入 [属性数值] → 新增/修改属性/技能（无空格格式，如/st 力量80敏捷75，值范围0-200）
+   ⚠️ 禁止修改：伤害加值、闪避、移动力（自动计算的衍生属性）
 7. /删除/ del [属性/技能名] → 删除/重置属性/技能
    - 基础属性：重置为默认值（如/删除 力量）
    - 自定义技能：直接删除（如/删除 感知）
-   - 衍生属性：无法删除/修改
+   ⚠️ 禁止删除：伤害加值、闪避、移动力（自动计算的衍生属性）
 8. /删除角色/ del_all → 删除整个角色数据（所有属性+技能清空）
 支持的基础属性：{', '.join(BASE_ATTR_NAMES)}
-衍生属性：{', '.join(DERIVED_ATTRS.keys())}
+衍生属性（自动计算，不可手动修改）：{', '.join(DERIVED_ATTRS.keys())}
 属性/技能值范围：0-200"""
 
     command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs)(\s+.*)?$"
@@ -675,7 +689,8 @@ class CoCDiceCommand(BaseCommand):
 1. /rd [阈值] [原因]（如/rd 70 躲避陷阱）
 2. /rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
 3. /rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
-   - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）"""
+   - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -772,7 +787,8 @@ class CoCDiceCommand(BaseCommand):
 {reason_desc}「{attr_name}」{attr_type}检定
 你的{attr_name}{attr_type}值：{{阈值}}
 投掷结果：{{投掷结果}}
-{{判定结果}}"""
+{{判定结果}}
+⚠️ 若为伤害加值/闪避/移动力，该值为自动计算，不可手动修改"""
                     check_data = {
                         "阈值": check_threshold,
                         "reason_desc": reason_desc,
@@ -806,7 +822,7 @@ class CoCDiceCommand(BaseCommand):
 用法：/删除 [属性/技能名]（如/删除 力量、/删除 感知）
 - 基础属性：重置为默认值
 - 自定义技能：直接删除
-- 衍生属性：无法删除/修改"""
+⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动删除/修改"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -879,7 +895,7 @@ class CoCDiceCommand(BaseCommand):
                 siz_val = attr_data.get("SIZ", 0)
                 dex_val = attr_data.get("DEX", 0)
                 derived_info = f"""
-衍生属性：
+衍生属性（自动计算，不可手动修改）：
 🔹 {DERIVED_ATTRS['伤害加值']}：{calculate_damage_bonus(str_val, siz_val)}
 🔹 {DERIVED_ATTRS['闪避']}：{calculate_dodge(dex_val)}
 🔹 {DERIVED_ATTRS['移动力']}：{calculate_movement(dex_val, str_val, siz_val)}"""
@@ -951,7 +967,7 @@ class CoCDiceCommand(BaseCommand):
                         await self.send_text(single_msg)
                         return True, single_msg, True
                     else:
-                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。"
+                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。\n⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"
                         await self.send_text(error_msg)
                         return False, error_msg, True
                 # 无参数：查询所有技能
@@ -959,7 +975,7 @@ class CoCDiceCommand(BaseCommand):
                     skill_lines, skill_count = get_character_skills(char_data)
                     
                     if not skill_lines:
-                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 力量80 感知75）"
+                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 力量80 感知75）\n⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改"
                     else:
                         skill_list = "\n".join(skill_lines)
 
