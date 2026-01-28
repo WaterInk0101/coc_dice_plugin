@@ -103,7 +103,13 @@ def get_plugin_config() -> Dict[str, Any]:
             "check_template": """🎲 克苏鲁检定（阈值：{阈值}）
 {原因说明}
 投掷结果：{投掷结果}
-{判定结果}"""
+{判定结果}""",
+            "damage_bonus_check_template": """🎲 衍生属性-伤害加值检定
+{reason_desc}「伤害加值」检定
+你的伤害加值表达式：{damage_bonus_expr}
+实时计算伤害加值：{damage_bonus_value}（作为检定阈值）
+投掷结果：{roll_result}
+{judge_result}"""
         },
         "character": {
             "output_template": """🎭 随机生成跑团基础属性：
@@ -248,7 +254,32 @@ def parse_import_attr_params(params: str) -> Dict[str, int]:
     
     return attr_dict
 
-# ===================== 衍生属性计算函数（纯实时计算，无存储） =====================
+def parse_damage_bonus_value(damage_bonus_str: str) -> int:
+    """
+    解析伤害加值字符串并计算实际数值
+    支持格式：-2、-1、0、1d4、1d6、2d6
+    """
+    # 处理固定数值
+    if damage_bonus_str.lstrip('-').isdigit():
+        return int(damage_bonus_str)
+    
+    # 处理骰子表达式
+    try:
+        # 匹配骰子表达式（如1d4、2d6）
+        dice_pattern = r"^(\d+)d(\d+)$"
+        match = re.match(dice_pattern, damage_bonus_str)
+        if match:
+            count = int(match.group(1))
+            face = int(match.group(2))
+            rolls, total = roll_dice(count, face)
+            return total
+    except Exception as e:
+        logger.error(f"解析伤害加值失败：{damage_bonus_str}，错误：{e}")
+    
+    # 解析失败默认返回0
+    return 0
+
+# ===================== 衍生属性计算函数（纯实时计算，无存储值） =====================
 def calculate_damage_bonus(str_value: int, siz_value: int) -> str:
     """计算伤害加值（STR+SIZ总和判断，纯骰子表达式）"""
     total = str_value + siz_value
@@ -535,6 +566,7 @@ class CoCDiceCommand(BaseCommand):
    - 模式1：/rd [阈值] [原因]（如/rd 70 躲避陷阱）
    - 模式2：/rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
    - 模式3：/rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
+     - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
 3. /创建角色 → 生成预设基础属性（含HP/MP/SAN）
 4. /查询角色 → 查看所有属性（基础属性+衍生属性）
 5. /查询技能 → 查看所有自定义技能（非属性项）
@@ -642,7 +674,8 @@ class CoCDiceCommand(BaseCommand):
                 error_msg = """❌ 缺少检定参数！支持三种用法：
 1. /rd [阈值] [原因]（如/rd 70 躲避陷阱）
 2. /rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
-3. /rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）"""
+3. /rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
+   - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -650,6 +683,7 @@ class CoCDiceCommand(BaseCommand):
                 check_threshold = None
                 attr_name = None
                 attr_type = ""  # 基础属性/衍生属性/自定义技能/阈值
+                damage_bonus_info = {}  # 存储伤害加值的额外信息
 
                 # 判断参数类型：数字阈值 / 属性/技能名
                 if first_param.isdigit():
@@ -678,21 +712,29 @@ class CoCDiceCommand(BaseCommand):
                     # 子模式2：衍生属性
                     elif attr_name in DERIVED_ATTRS:
                         derived_value = get_derived_attr_value(attr_name, user_char)
-                        # 处理伤害加值（字符串）转阈值：默认取50
+                        attr_type = "衍生属性"
+                        
+                        # 特殊处理：伤害加值（实时计算骰子表达式）
                         if attr_name == "伤害加值":
-                            check_threshold = 50
-                            attr_type = "衍生属性"
+                            damage_bonus_expr = derived_value
+                            damage_bonus_value = parse_damage_bonus_value(damage_bonus_expr)
+                            check_threshold = damage_bonus_value
+                            # 存储伤害加值信息用于展示
+                            damage_bonus_info = {
+                                "expr": damage_bonus_expr,
+                                "value": damage_bonus_value
+                            }
                         else:
                             # 闪避/移动力是整数，直接作为阈值
                             check_threshold = derived_value
-                            attr_type = "衍生属性"
+
                     # 子模式3：自定义技能
                     else:
                         check_threshold = user_char.get(attr_name, 0)
                         attr_type = "自定义技能"
 
-                    # 验证值有效性
-                    if not isinstance(check_threshold, int) or check_threshold < 1 or check_threshold > 200:
+                    # 验证值有效性（伤害加值允许0/负数，其他属性需1-200）
+                    if attr_name != "伤害加值" and (not isinstance(check_threshold, int) or check_threshold < 1 or check_threshold > 200):
                         error_msg = f"❌ 「{attr_name}」值异常（{check_threshold}），无法检定！"
                         await self.send_text(error_msg)
                         return False, error_msg, True
@@ -714,8 +756,18 @@ class CoCDiceCommand(BaseCommand):
 
                 # 构建提示信息
                 reason_desc = f"因为{reason}所以进行" if reason else "进行"
-                if attr_name:
-                    # 属性/技能检定提示（仅输出结果，无计算过程）
+                if attr_name == "伤害加值" and damage_bonus_info:
+                    # 伤害加值专用模板
+                    damage_bonus_data = {
+                        "reason_desc": reason_desc,
+                        "damage_bonus_expr": damage_bonus_info["expr"],
+                        "damage_bonus_value": damage_bonus_info["value"],
+                        "roll_result": total,
+                        "judge_result": judge_result
+                    }
+                    msg = render_template(config["dice"]["damage_bonus_check_template"], damage_bonus_data)
+                elif attr_name:
+                    # 其他属性/技能检定提示
                     check_template = f"""🎲 {attr_type}-{attr_name}检定（阈值：{{阈值}}）
 {reason_desc}「{attr_name}」{attr_type}检定
 你的{attr_name}{attr_type}值：{{阈值}}
@@ -723,7 +775,7 @@ class CoCDiceCommand(BaseCommand):
 {{判定结果}}"""
                     check_data = {
                         "阈值": check_threshold,
-                        "原因说明": reason_desc,
+                        "reason_desc": reason_desc,
                         "投掷结果": total,
                         "判定结果": judge_result
                     }
@@ -732,7 +784,7 @@ class CoCDiceCommand(BaseCommand):
                     # 阈值检定提示
                     check_data = {
                         "阈值": check_threshold,
-                        "原因说明": f"{reason_desc}D100检定",
+                        "reason_desc": f"{reason_desc}D100检定",
                         "投掷结果": total,
                         "判定结果": judge_result
                     }
@@ -1003,7 +1055,8 @@ class CoCDicePlugin(BasePlugin):
             "fail_threshold": ConfigField(type=int, default=96, description="D100大失败阈值"),
             "default_message": ConfigField(type=str, default="🎲 骰子投掷完成！", description="默认提示"),
             "roll_template": ConfigField(type=str, default=get_plugin_config()["dice"]["roll_template"], description="掷骰模板"),
-            "check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["check_template"], description="检定模板")
+            "check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["check_template"], description="检定模板"),
+            "damage_bonus_check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["damage_bonus_check_template"], description="伤害加值检定专用模板")
         },
         "character": {
             "output_template": ConfigField(type=str, default=get_plugin_config()["character"]["output_template"], description="创建角色模板"),
