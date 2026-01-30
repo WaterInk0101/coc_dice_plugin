@@ -150,23 +150,23 @@ san_check_template = "🎲 🌀 {nickname}的SAN值（理智）检定\n{reason_d
 [character]
 
 # 创建角色模板
-output_template = "🎭 {nickname}的角色属性：\n{属性列表}\n📊 预设属性总值：{总属性}\n💡 支持导入自定义属性（如/导入 力量80 感知75）\n"
+output_template = "🎭 {nickname}的角色属性：\n{属性列表}\n📊 核心基础属性总值：{总属性}\n"
 
 # 查询角色模板
-query_template = "🎭 {nickname}的绑定角色属性：\n{基础属性列表}\n📊 基础属性总数：{基础总属性}\n💡 发送「/查询技能」查看所有技能，/rd [属性/技能名] 可检定任意项\n"
+query_template = "🎭 {nickname}的绑定角色属性：\n{基础属性列表}\n📊 核心基础属性总数：{基础总属性}\n"
 
 # 查询技能模板
-skill_query_template = "🎭 {nickname}的角色技能列表：\n{技能列表}\n📊 技能总数：{skill_count}\n💡 发送「/查询角色」查看属性，/rd [技能名] 可检定该技能/属性\n"
+skill_query_template = "🎭 {nickname}的角色技能列表：\n{技能列表}\n📊 技能总数：{skill_count}\n"
 
 # 单个技能查询模板
-single_skill_template = "🎭 {nickname}的角色技能/属性查询结果：\n🔹 {skill_name}：{skill_value}\n💡 发送「/查询技能」查看所有技能，/rd {skill_name} 可检定该技能/属性\n"
+single_skill_template = "🎭 {nickname}的角色技能/属性查询结果：\n🔹 {skill_name}：{skill_value}\n"
 
 
 # 属性导入配置
 [import_attr]
 
 # 导入成功模板
-success_template = "✅ {nickname}的角色属性修改/新增成功！\n{自动创建提示}\n修改/新增的属性：\n{修改列表}\n📊 当前基础属性总值：{基础总属性}\n💡 发送「/查询角色」查看完整属性，/查询技能 查看技能\n"
+success_template = "✅ {nickname}的角色属性修改/新增成功！\n{自动创建提示}\n修改/新增的属性：\n{修改列表}\n📊 当前核心基础属性总值：{基础总属性}\n"
 
 # 自动创建提示
 auto_create_tip = "🔔 检测到你未创建角色，已自动生成预设属性并新增/覆盖指定值！"
@@ -182,7 +182,7 @@ error_template = "❌ 属性修改失败：\n{错误原因}\n💡 正确格式�
 [delete_attr]
 
 # 删除属性成功模板
-success_template = "✅ {nickname}的角色属性操作成功！\n{操作描述}\n📊 当前基础属性总值：{基础总属性}\n💡 发送「/查询角色」查看最新属性，/查询技能 查看技能\n"
+success_template = "✅ {nickname}的角色属性操作成功！\n{操作描述}\n📊 当前核心基础属性总值：{基础总属性}\n"
 
 # 删除角色成功模板
 delete_role_template = "✅ {nickname}的角色已删除成功！\n你的所有角色数据已清空，可发送「/创建角色」重新生成。"
@@ -195,7 +195,7 @@ error_template = "❌ 属性操作失败：\n{错误原因}\n💡 支持的操�
 [rename]
 
 # 改名成功模板
-success_template = "✅ {old_nickname}的角色已成功改名为「{new_nickname}」！\n💡 发送「/查询角色」查看改名后的角色信息"
+success_template = "✅ {old_nickname}的角色已成功改名为「{new_nickname}」！\n"
 
 # 改名错误模板
 error_template = "❌ 角色改名失败：\n{错误原因}\n💡 正确格式：/nn [新昵称]（如/nn 冒险者小明）"
