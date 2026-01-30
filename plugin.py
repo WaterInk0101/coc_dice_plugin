@@ -46,8 +46,8 @@ def save_character_data(char_data: Dict[str, Dict[str, int]]) -> bool:
 
 USER_CHARACTER_DATA = load_character_data()
 
-# ===================== 预设属性映射（扩展HP/MP/SAN） =====================
-# 基础属性（含HP/MP/SAN）
+# ===================== 预设属性映射（重构：伤害加值/闪避/移动力转为基础属性） =====================
+# 基础属性（含HP/MP/SAN + 原衍生属性：伤害加值/闪避/移动力）
 BASE_ATTR_MAP = {
     "生命": ("HP", "❤️生命(HP)"),
     "魔力": ("MP", "🧪魔力(MP)"),
@@ -60,16 +60,15 @@ BASE_ATTR_MAP = {
     "智力": ("INT", "🧠智力(INT)"),
     "意志": ("POW", "🔮意志(POW)"),
     "教育": ("EDU", "📚教育(EDU)"),
-    "幸运": ("LUCK", "🍀幸运(LUCK)")
+    "幸运": ("LUCK", "🍀幸运(LUCK)"),
+    "伤害加值": ("DB", "💥伤害加值(DB)"),  # 新增：转为基础属性，缩写DB
+    "闪避": ("DODGE", "🤸闪避(DODGE)"),  # 新增：转为基础属性，缩写DODGE
+    "移动力": ("MOV", "⚡移动力(MOV)")     # 新增：转为基础属性，缩写MOV
 }
-# 衍生属性（自动计算，无存储值，不可手动修改）
-DERIVED_ATTRS = {
-    "伤害加值": "💥伤害加值",
-    "闪避": "🤸闪避",
-    "移动力": "⚡移动力(MOV)"
-}
-# 禁止手动修改的属性列表（衍生属性）
-FORBIDDEN_ATTRS = set(DERIVED_ATTRS.keys())
+# 移除衍生属性定义（全部转为基础属性）
+DERIVED_ATTRS = {}
+# 移除禁止修改的属性列表（所有属性均可修改）
+FORBIDDEN_ATTRS = set()
 
 BASE_ATTR_NAMES = set(BASE_ATTR_MAP.keys())
 BASE_ATTR_TO_SHORT = {name: short for name, (short, full) in BASE_ATTR_MAP.items()}
@@ -83,7 +82,7 @@ SHORT_CMD_MAP = {
     "del": "删除",
     "del_all": "删除角色",
     "qs": "查询技能",
-    "sc": "san检定"  # 新增SAN检定快捷指令
+    "sc": "san检定"
 }
 
 # ===================== 配置文件相关 =====================
@@ -96,7 +95,7 @@ def get_plugin_config() -> Dict[str, Any]:
             "show_detail": True,
             "success_threshold": 5,
             "fail_threshold": 96,
-            "default_message": "🎲 投掷完成！",
+            "default_message": "🎲 骰子投掷完成！",
             "roll_template": """🎲 投掷「{表达式}」结果：
 {原因说明}
 单次结果：{单次结果}
@@ -107,12 +106,6 @@ def get_plugin_config() -> Dict[str, Any]:
 {原因说明}
 投掷结果：{投掷结果}
 {判定结果}""",
-            "damage_bonus_check_template": """🎲 衍生属性-伤害加值检定
-{reason_desc}「伤害加值」检定
-你的伤害加值表达式：{damage_bonus_expr}
-实时计算伤害加值：{damage_bonus_value}（作为检定阈值）
-投掷结果：{roll_result}
-{judge_result}""",
             "san_check_template": """🎲 🌀 SAN值（理智）检定
 {reason_desc}
 你的当前SAN值：{current_san}（检定阈值）
@@ -123,20 +116,18 @@ D100投掷结果：{roll_result}
 🔹 扣除后SAN值：{after_san}"""
         },
         "character": {
-            "output_template": """🎭 随机生成跑团基础属性：
+            "output_template": """🎭 您的基础属性为：
 {属性列表}
 📊 预设属性总值：{总属性}
 💡 支持导入自定义属性（如/导入 力量80 感知75）""",
             "query_template": """🎭 你的绑定角色属性：
 {基础属性列表}
-{衍生属性列表}
 📊 基础属性总数：{基础总属性}
-💡 发送「/查询技能」查看所有技能，/rd [属性/技能名] 可检定任意项
-⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动修改""",
+💡 发送「/查询技能」查看所有技能，/rd [属性/技能名] 可检定任意项""",
             "skill_query_template": """🎭 你的角色技能列表：
 {技能列表}
 📊 技能总数：{skill_count}
-💡 发送「/查询角色」查看属性，/rd [技能名] 可检定技能""",
+💡 发送「/查询角色」查看属性，/rd [技能名] 可检定该技能/属性""",
             "single_skill_template": """🎭 角色技能/属性查询结果：
 🔹 {skill_name}：{skill_value}
 💡 发送「/查询技能」查看所有技能，/rd {skill_name} 可检定该技能/属性"""
@@ -153,7 +144,7 @@ D100投掷结果：{roll_result}
             "error_template": """❌ 属性修改失败：
 {错误原因}
 💡 正确格式：/st 力量80敏捷75 或 /st 力量80 感知75（属性值范围0-200）
-💡 基础属性：{基础属性列表}改"""
+💡 基础属性：{基础属性列表}"""
         },
         "delete_attr": {
             "success_template": """✅ 属性操作成功！
@@ -227,7 +218,7 @@ def split_check_params(params: str) -> Tuple[str, str]:
 def parse_import_attr_params(params: str) -> Dict[str, int]:
     """
     解析导入属性参数（支持无空格格式，如力量21敏捷43，值范围0-200）
-    禁止解析伤害加值/闪避/移动力（自动计算属性）
+    支持伤害加值的表达式解析（如伤害加值1d4 → 自动掷骰为数值）
     """
     if not params.strip():
         raise ValueError("未输入任何属性参数")
@@ -236,9 +227,8 @@ def parse_import_attr_params(params: str) -> Dict[str, int]:
     # 先按空格拆分（兼容原有格式），再逐个解析无空格的属性值对
     param_parts = params.strip().split()
     
-    # 匹配中文属性名+数字的正则（支持多字符中文属性名，如"伤害加值"，数字部分支持0开头）
-    # 正则说明：([^\d]+) 匹配任意非数字字符（属性名），(\d+) 匹配数字（属性值）
-    attr_pattern = re.compile(r'([^\d]+)(\d+)')
+    # 匹配中文属性名+数字/表达式的正则
+    attr_pattern = re.compile(r'([^\d]+)([\d+-d]+)')
     
     for part in param_parts:
         # 循环解析单个part中的所有属性值对（如"力量21敏捷43"）
@@ -246,34 +236,46 @@ def parse_import_attr_params(params: str) -> Dict[str, int]:
         while remaining:
             match = attr_pattern.match(remaining)
             if not match:
-                raise ValueError(f"属性格式错误：{part}（正确示例：力量80敏捷75 或 力量80 感知75）")
+                raise ValueError(f"属性格式错误：{part}（正确示例：力量80敏捷75 或 伤害加值1d4）")
             
             attr_name = match.group(1).strip()
             value_str = match.group(2).strip()
             remaining = remaining[match.end():]  # 截取剩余部分继续解析
             
-            # 检查是否为禁止手动修改的属性
-            if attr_name in FORBIDDEN_ATTRS:
-                raise ValueError(f"「{attr_name}」是自动计算的衍生属性，不可手动修改！")
+            # 处理伤害加值的表达式（如1d4、2d6等）
+            attr_value = 0
+            if attr_name == "伤害加值":
+                try:
+                    # 先尝试解析为骰子表达式
+                    count, face, modifier = parse_dice_expression(value_str)
+                    rolls, total = roll_dice(count, face, modifier)
+                    attr_value = total
+                    logger.info(f"伤害加值表达式{value_str}解析为数值：{attr_value}")
+                except ValueError:
+                    # 解析失败则尝试作为纯数字处理
+                    if not value_str.lstrip('-').isdigit():
+                        raise ValueError(f"伤害加值格式错误：{value_str}（支持纯数字或骰子表达式，如5、1d4）")
+                    attr_value = int(value_str)
+            else:
+                # 其他属性仅支持纯数字
+                if not value_str.lstrip('-').isdigit():
+                    raise ValueError(f"属性值非法：{attr_name}{value_str}（必须是0-200的整数）")
+                attr_value = int(value_str)
             
             # 校验数值范围（0-200）
-            if not value_str.isdigit():
-                raise ValueError(f"属性值非法：{attr_name}{value_str}（必须是0-200的整数）")
-            
-            attr_value = int(value_str)
             if attr_value < 0 or attr_value > 200:
                 raise ValueError(f"属性值超出范围：{attr_name}{attr_value}（0-200）")
             
             attr_dict[attr_name] = attr_value
     
     if not attr_dict:
-        raise ValueError("未解析到有效的属性参数（正确示例：力量80敏捷75）")
+        raise ValueError("未解析到有效的属性参数（正确示例：力量80敏捷75 或 伤害加值1d4）")
     
     return attr_dict
 
 def parse_damage_bonus_value(damage_bonus_str: str) -> int:
     """
-    解析伤害加值字符串并计算实际数值
+    解析伤害加值字符串并计算实际数值（仅用于角色创建时的初始计算）
     支持格式：-2、-1、0、1d4、1d6、2d6
     """
     # 处理固定数值
@@ -316,31 +318,35 @@ def parse_san_deduct_value(expr: str) -> int:
         logger.error(f"解析SAN扣除值失败：{expr}，错误：{e}")
         return 1  # 解析失败默认扣除1点
 
-# ===================== 衍生属性计算函数（纯实时计算，无存储值） =====================
-def calculate_damage_bonus(str_value: int, siz_value: int) -> str:
-    """计算伤害加值（STR+SIZ总和判断，纯骰子表达式）"""
+# ===================== 初始属性计算函数（仅用于角色创建时生成初始值） =====================
+def calculate_damage_bonus(str_value: int, siz_value: int) -> int:
+    """计算伤害加值初始值（STR+SIZ总和判断，表达式自动掷骰为数值）"""
     total = str_value + siz_value
+    damage_bonus_expr = ""
     if 2 <= total <= 64:
-        return "-2"
+        damage_bonus_expr = "-2"
     elif 65 <= total <= 84:
-        return "-1"
+        damage_bonus_expr = "-1"
     elif 85 <= total <= 124:
-        return "0"
+        damage_bonus_expr = "0"
     elif 125 <= total <= 164:
-        return "1d4"
+        damage_bonus_expr = "1d4"
     elif 165 <= total <= 204:
-        return "1d6"
+        damage_bonus_expr = "1d6"
     elif total >= 205:
-        return "2d6"
+        damage_bonus_expr = "2d6"
     else:
-        return "-2"
+        damage_bonus_expr = "-2"
+    
+    # 解析表达式为数值
+    return parse_damage_bonus_value(damage_bonus_expr)
 
 def calculate_dodge(dex_value: int) -> int:
-    """计算闪避（DEX÷2，向下取整）"""
+    """计算闪避初始值（DEX÷2，向下取整）"""
     return dex_value // 2
 
 def calculate_movement(dex_value: int, str_value: int, siz_value: int) -> int:
-    """计算移动力"""
+    """计算移动力初始值"""
     if dex_value < siz_value and str_value < siz_value:
         return 7
     elif dex_value > siz_value and str_value > siz_value:
@@ -348,29 +354,9 @@ def calculate_movement(dex_value: int, str_value: int, siz_value: int) -> int:
     else:
         return 8
 
-def get_derived_attr_value(attr_name: str, char_data: Dict[str, int]) -> Any:
-    """
-    实时获取衍生属性值
-    :param attr_name: 衍生属性名（伤害加值/闪避/移动力）
-    :param char_data: 角色基础属性数据
-    :return: 衍生属性值（字符串/整数）
-    """
-    str_val = char_data.get("STR", 0)
-    siz_val = char_data.get("SIZ", 0)
-    dex_val = char_data.get("DEX", 0)
-    
-    if attr_name == "伤害加值":
-        return calculate_damage_bonus(str_val, siz_val)
-    elif attr_name == "闪避":
-        return calculate_dodge(dex_val)
-    elif attr_name == "移动力":
-        return calculate_movement(dex_val, str_val, siz_val)
-    else:
-        return None
-
 # ===================== 角色属性生成/格式化 =====================
 def generate_character_attributes() -> Dict[str, int]:
-    """生成预设基础属性（修改SIZ/INT/EDU公式为(2D6+6)×5）"""
+    """生成预设基础属性（包含伤害加值/闪避/移动力的初始值）"""
     attr_results = {}
     
     # HP/MP/SAN默认值
@@ -390,72 +376,81 @@ def generate_character_attributes() -> Dict[str, int]:
         rolls, sum_2d6 = roll_dice(2, 6)
         attr_results[short] = (sum_2d6 + 6) * 5
     
-    # 计算基础属性总值（不含HP/MP/SAN）
-    base_total = sum([attr_results[short] for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+    # 计算新增基础属性的初始值
+    str_val = attr_results["STR"]
+    siz_val = attr_results["SIZ"]
+    dex_val = attr_results["DEX"]
+    
+    attr_results["DB"] = calculate_damage_bonus(str_val, siz_val)    # 伤害加值初始值
+    attr_results["DODGE"] = calculate_dodge(dex_val)                # 闪避初始值
+    attr_results["MOV"] = calculate_movement(dex_val, str_val, siz_val)  # 移动力初始值
+    
+    # 计算基础属性总值（包含所有基础属性）
+    base_total = sum([attr_results[short] for short in SHORT_TO_BASE_ATTR.keys()])
     attr_results["基础总属性"] = base_total
     return attr_results
 
 def generate_single_base_attr(attr_name: str) -> int:
-    """生成单个基础属性的默认值"""
+    """生成单个基础属性的默认值（支持伤害加值/闪避/移动力）"""
     if attr_name not in BASE_ATTR_TO_SHORT:
         raise ValueError(f"{attr_name}不是基础属性，无法生成默认值")
     short_name = BASE_ATTR_TO_SHORT[attr_name]
     
+    # 基础属性默认值
     if short_name in ["HP", "MP", "SAN"]:
         defaults = {"HP": 12, "MP": 10, "SAN": 50}
         return defaults[short_name]
     
+    # 常规属性（3d6×5）
+    if short_name in ["STR", "CON", "DEX", "APP", "POW", "LUCK"]:
+        rolls, sum_3d6 = roll_dice(3, 6)
+        return sum_3d6 * 5
+    
+    # 特殊属性（(2D6+6)×5）
     if short_name in ["SIZ", "INT", "EDU"]:
         rolls, sum_2d6 = roll_dice(2, 6)
         return (sum_2d6 + 6) * 5
-    else:
-        rolls, sum_3d6 = roll_dice(3, 6)
-        return sum_3d6 * 5
+    
+    # 新增基础属性的默认值（基于随机生成的STR/SIZ/DEX）
+    if short_name == "DB":  # 伤害加值
+        str_val = generate_single_base_attr("力量")
+        siz_val = generate_single_base_attr("体型")
+        return calculate_damage_bonus(str_val, siz_val)
+    elif short_name == "DODGE":  # 闪避
+        dex_val = generate_single_base_attr("敏捷")
+        return calculate_dodge(dex_val)
+    elif short_name == "MOV":  # 移动力
+        dex_val = generate_single_base_attr("敏捷")
+        str_val = generate_single_base_attr("力量")
+        siz_val = generate_single_base_attr("体型")
+        return calculate_movement(dex_val, str_val, siz_val)
+    
+    return 0
 
 def format_character_attributes(char_data: Dict[str, int]) -> Tuple[str, str, int, Dict[str, str]]:
-    """格式化角色属性（区分基础属性/衍生属性/技能）"""
-    # 处理基础属性
+    """格式化角色属性（所有属性均为基础属性）"""
+    # 处理基础属性（包含伤害加值/闪避/移动力）
     base_attr_lines = []
     base_total = 0
     for attr_name, (short_name, full_name) in BASE_ATTR_MAP.items():
         value = char_data.get(short_name, 0)
         base_attr_lines.append(f"🔹 {full_name}：{value}")
-        if short_name not in ["HP", "MP", "SAN"]:
-            base_total += value
+        base_total += value
     
-    # 计算衍生属性（仅输出结果）
-    str_val = char_data.get("STR", 0)
-    siz_val = char_data.get("SIZ", 0)
-    dex_val = char_data.get("DEX", 0)
-    
-    damage_bonus = calculate_damage_bonus(str_val, siz_val)
-    dodge = calculate_dodge(dex_val)
-    movement = calculate_movement(dex_val, str_val, siz_val)
-    
-    derived_attr_lines = [
-        f"🔹 {DERIVED_ATTRS['伤害加值']}：{damage_bonus}（自动计算）",
-        f"🔹 {DERIVED_ATTRS['闪避']}：{dodge}（自动计算）",
-        f"🔹 {DERIVED_ATTRS['移动力']}：{movement}（自动计算）"
-    ]
-    
-    # 整理衍生属性值
-    derived_attr_values = {
-        "伤害加值": damage_bonus,
-        "闪避": str(dodge),
-        "移动力": str(movement)
-    }
+    # 衍生属性已移除，返回空字符串
+    derived_attr_str = ""
+    derived_attr_values = {}
     
     base_attr_str = "\n".join(base_attr_lines) if base_attr_lines else "暂无基础属性"
-    derived_attr_str = "\n".join(derived_attr_lines) if derived_attr_lines else "暂无衍生属性"
     
     return base_attr_str, derived_attr_str, base_total, derived_attr_values
 
 def get_character_skills(char_data: Dict[str, int]) -> Tuple[List[str], int]:
-    """提取角色技能（非基础属性/衍生属性/统计项）"""
-    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"]) | FORBIDDEN_ATTRS
+    """提取角色技能（非基础属性/统计项）"""
+    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"])
     skill_lines = []
     for key, value in char_data.items():
-        if key not in exclude_keys and key not in DERIVED_ATTRS:
+        if key not in exclude_keys:
             skill_lines.append(f"🔹 {key}：{value}")
     
     return skill_lines, len(skill_lines)
@@ -463,53 +458,44 @@ def get_character_skills(char_data: Dict[str, int]) -> Tuple[List[str], int]:
 # ===================== 获取单个技能/属性值 =====================
 def get_single_skill_value(skill_name: str, char_data: Dict[str, int]) -> Tuple[bool, str, Any]:
     """
-    获取单个技能/属性的值
+    获取单个技能/属性的值（伤害加值/闪避/移动力作为基础属性处理）
     :param skill_name: 技能/属性名
     :param char_data: 角色数据
     :return: (是否存在, 显示名称, 值)
     """
-    # 1. 检查基础属性
+    # 1. 检查基础属性（包含伤害加值/闪避/移动力）
     if skill_name in BASE_ATTR_NAMES:
         short_name = BASE_ATTR_TO_SHORT[skill_name]
         value = char_data.get(short_name, 0)
         full_name = BASE_ATTR_MAP[skill_name][1]
         return True, full_name, value
     
-    # 2. 检查衍生属性（自动计算，不可修改）
-    if skill_name in DERIVED_ATTRS:
-        value = get_derived_attr_value(skill_name, char_data)
-        full_name = DERIVED_ATTRS[skill_name]
-        return True, full_name, value
-    
-    # 3. 检查自定义技能
-    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"]) | FORBIDDEN_ATTRS
-    if skill_name in char_data and skill_name not in exclude_keys and skill_name not in DERIVED_ATTRS:
+    # 2. 检查自定义技能
+    exclude_keys = set(SHORT_TO_BASE_ATTR.keys()) | set(["基础总属性", "总属性"])
+    if skill_name in char_data and skill_name not in exclude_keys:
         value = char_data[skill_name]
         return True, skill_name, value
     
-    # 4. 未找到
+    # 3. 未找到
     return False, skill_name, None
 
 # ===================== 删除属性/角色核心函数 =====================
 def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str, Dict[str, int]]:
-    """删除/重置角色属性/技能（禁止删除衍生属性）"""
+    """删除/重置角色属性/技能（所有基础属性均可重置）"""
     if user_id not in USER_CHARACTER_DATA:
         return False, "你还未创建角色，无属性/技能可删除！", {}
 
-    # 检查是否为禁止删除的衍生属性
-    if attr_name in FORBIDDEN_ATTRS:
-        return False, f"「{attr_name}」是自动计算的衍生属性，不可手动删除/修改！", {}
-
     user_char = USER_CHARACTER_DATA[user_id].copy()
 
-    # 1. 基础属性（重置为默认值）
+    # 1. 基础属性（包括伤害加值/闪避/移动力，重置为默认值）
     if attr_name in BASE_ATTR_NAMES:
         short_name = BASE_ATTR_TO_SHORT[attr_name]
         old_value = user_char.get(short_name, 0)
         new_value = generate_single_base_attr(attr_name)
         user_char[short_name] = new_value
 
-        base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+        # 重新计算基础总值
+        base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
         user_char["基础总属性"] = base_total
 
         return True, f"基础属性-{attr_name}已重置为默认值：{old_value} → {new_value}", user_char
@@ -519,7 +505,8 @@ def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str,
         old_value = user_char[attr_name]
         del user_char[attr_name]
 
-        base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+        # 重新计算基础总值
+        base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
         user_char["基础总属性"] = base_total
 
         return True, f"技能-{attr_name}已删除（原值：{old_value}）", user_char
@@ -540,7 +527,7 @@ def delete_character(user_id: str) -> bool:
 class CoCDiceTool(BaseTool):
     """CoC骰子工具（LLM调用）"""
     name = "coc_dice_tool"
-    description = "克苏鲁跑团骰子投掷工具，支持D100/2d6等格式，返回投掷结果"
+    description = "跑团骰子投掷工具，支持D100/2d6等格式，返回投掷结果"
     parameters = [
         ("dice_expr", ToolParamType.STRING, "骰子表达式（如d100、2d6+3）", True, None),
     ]
@@ -601,28 +588,26 @@ class CoCDiceCommand(BaseCommand):
 1. /r [表达式] [原因] → 投掷骰子（如/r d100 探索密室）
 2. /rd [参数] [原因] → 检定（支持三种模式）
    - 模式1：/rd [阈值] [原因]（如/rd 70 躲避陷阱）
-   - 模式2：/rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
-   - 模式3：/rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
-     - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
+   - 模式2：/rd [属性/技能名] [原因]（如/rd 力量、/rd 伤害加值）
+   - 模式3：/rd [属性+修正值] [原因]（如/rd 力量+10、/rd 伤害加值-5）
 3. /sc [成功扣除/失败扣除] [原因] → SAN值（理智）检定（如/sc 1d5/1d6 目睹怪物、/sc 5/6 看到诡异场景）
    - 规则：以当前SAN值为阈值掷D100
      - 结果 < SAN值：检定成功，扣除「成功扣除」值（1d5/5）
      - 结果 > SAN值：检定失败，扣除「失败扣除」值（1d6/6）
      - SAN值最低为0，不会出现负数
-4. /创建角色 → 生成预设基础属性（含HP/MP/SAN）
-5. /查询角色 → 查看所有属性（基础属性+衍生属性）
+4. /创建角色 → 生成预设基础属性（含伤害加值/闪避/移动力初始值）
+5. /查询角色 → 查看所有属性（所有属性均可手动修改）
 6. /查询技能 → 查看所有自定义技能（非属性项）
-   /查询技能 [属性/技能名] → 单独查看指定技能/属性的值（如/查询技能 感知、/查询技能 闪避）
-7. /st/导入 [属性数值] → 新增/修改属性/技能（无空格格式，如/st 力量80敏捷75，值范围0-200）
-   ⚠️ 禁止修改：伤害加值、闪避、移动力（自动计算的衍生属性）
+   /查询技能 [属性/技能名] → 单独查看指定技能/属性的值（如/查询技能 伤害加值、/查询技能 闪避）
+7. /st/导入 [属性数值] → 新增/修改属性/技能（支持伤害加值表达式）
+   示例：/st 力量80 伤害加值1d4 → 伤害加值自动掷骰为数值存储
+   属性值范围：0-200
 8. /删除/ del [属性/技能名] → 删除/重置属性/技能
-   - 基础属性：重置为默认值（如/删除 力量）
-   - 自定义技能：直接删除（如/删除 感知）
-   ⚠️ 禁止删除：伤害加值、闪避、移动力（自动计算的衍生属性）
+   - 基础属性（含伤害加值/闪避/移动力）：重置为默认值
+   - 自定义技能：直接删除
 9. /删除角色/ del_all → 删除整个角色数据（所有属性+技能清空）
 支持的基础属性：{', '.join(BASE_ATTR_NAMES)}
-衍生属性（自动计算，不可手动修改）：{', '.join(DERIVED_ATTRS.keys())}
-属性/技能值范围：0-200"""
+所有基础属性均可手动修改（包括伤害加值/闪避/移动力）"""
 
     command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|sc|san检定)(\s+.*)?$"
 
@@ -683,7 +668,7 @@ class CoCDiceCommand(BaseCommand):
                         modified_attrs.append(f"🔹 技能-{attr_name}：{old_value} → {attr_value}")
 
                 # 重新计算基础总值
-                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
                 user_char["基础总属性"] = base_total
 
                 # 保存并返回结果
@@ -716,9 +701,8 @@ class CoCDiceCommand(BaseCommand):
             if not first_param:
                 error_msg = """❌ 缺少检定参数！支持三种用法：
 1. /rd [阈值] [原因]（如/rd 70 躲避陷阱）
-2. /rd [基础属性名] [原因]（如/rd 力量、/rd 感知）
-3. /rd [衍生属性名] [原因]（如/rd 伤害加值、/rd 闪避）
-   - 伤害加值：实时计算骰子表达式值作为检定阈值（如1d4随机生成1-4）
+2. /rd [属性/技能名] [原因]（如/rd 力量、/rd 伤害加值）
+3. /rd [属性+修正值] [原因]（如/rd 力量+10、/rd 伤害加值-5）
 """
                 await self.send_text(error_msg)
                 return False, error_msg, True
@@ -726,12 +710,54 @@ class CoCDiceCommand(BaseCommand):
             try:
                 check_threshold = None
                 attr_name = None
-                attr_type = ""  # 基础属性/衍生属性/自定义技能/阈值
-                damage_bonus_info = {}  # 存储伤害加值的额外信息
+                attr_type = ""  # 基础属性/自定义技能/阈值
+                modifier = 0    # 新增：修正值
+                base_value = 0  # 新增：属性基础值
 
-                # 判断参数类型：数字阈值 / 属性/技能名
-                if first_param.isdigit():
-                    # 模式1：直接阈值检定
+                # 新增：解析属性+修正值格式（如力量+10、伤害加值-5）
+                # 匹配包含+/-的属性修正格式（注意+需要转义）
+                attr_mod_pattern = re.compile(r'^([^\+\-]+)([\+\-]\d+)$')
+                mod_match = attr_mod_pattern.match(first_param)
+                
+                if mod_match:
+                    # 模式3：属性+修正值检定（如力量+10、伤害加值-5）
+                    attr_name = mod_match.group(1).strip()
+                    modifier_str = mod_match.group(2).strip()
+                    
+                    # 解析修正值
+                    try:
+                        modifier = int(modifier_str)
+                    except ValueError:
+                        error_msg = f"❌ 修正值格式错误：{modifier_str}（必须是整数，如+10、-5）"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                    
+                    # 检查角色是否存在
+                    if user_id not in USER_CHARACTER_DATA:
+                        error_msg = f"❌ 你还未创建角色！无法获取「{attr_name}」值。"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+
+                    user_char = USER_CHARACTER_DATA[user_id]
+                    # 获取属性基础值
+                    exists, show_name, base_value = get_single_skill_value(attr_name, user_char)
+                    if not exists:
+                        error_msg = f"❌ 未找到属性/技能「{attr_name}」！"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                    
+                    # 计算最终阈值（基础值+修正值）
+                    check_threshold = base_value + modifier
+                    attr_type = "基础属性" if attr_name in BASE_ATTR_NAMES else "自定义技能"
+                    
+                    # 校验最终阈值有效性
+                    if check_threshold < 1 or check_threshold > 199:
+                        error_msg = f"❌ 「{attr_name}」基础值{base_value}{modifier_str}={check_threshold}，超出检定阈值范围（1-199）！"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+
+                elif first_param.isdigit():
+                    # 模式1：直接阈值检定（原有逻辑）
                     check_threshold = int(first_param)
                     attr_type = "阈值"
                     if check_threshold < 1 or check_threshold > 199:
@@ -739,7 +765,7 @@ class CoCDiceCommand(BaseCommand):
                         await self.send_text(error_msg)
                         return False, error_msg, True
                 else:
-                    # 模式2/3：属性/技能名检定（基础属性/衍生属性/自定义技能）
+                    # 模式2：纯属性/技能名检定（原有逻辑）
                     attr_name = first_param
                     if user_id not in USER_CHARACTER_DATA:
                         error_msg = f"❌ 你还未创建角色！无法获取「{attr_name}」值。"
@@ -748,37 +774,21 @@ class CoCDiceCommand(BaseCommand):
 
                     user_char = USER_CHARACTER_DATA[user_id]
                     
-                    # 子模式1：基础属性
+                    # 获取属性/技能值
+                    exists, show_name, base_value = get_single_skill_value(attr_name, user_char)
+                    if not exists:
+                        error_msg = f"❌ 未找到属性/技能「{attr_name}」！"
+                        await self.send_text(error_msg)
+                        return False, error_msg, True
+                    
+                    check_threshold = base_value  # 无修正值，基础值=最终阈值
                     if attr_name in BASE_ATTR_NAMES:
-                        attr_short = BASE_ATTR_TO_SHORT[attr_name]
-                        check_threshold = user_char.get(attr_short, 0)
                         attr_type = "基础属性"
-                    # 子模式2：衍生属性
-                    elif attr_name in DERIVED_ATTRS:
-                        derived_value = get_derived_attr_value(attr_name, user_char)
-                        attr_type = "衍生属性"
-                        
-                        # 特殊处理：伤害加值（实时计算骰子表达式）
-                        if attr_name == "伤害加值":
-                            damage_bonus_expr = derived_value
-                            damage_bonus_value = parse_damage_bonus_value(damage_bonus_expr)
-                            check_threshold = damage_bonus_value
-                            # 存储伤害加值信息用于展示
-                            damage_bonus_info = {
-                                "expr": damage_bonus_expr,
-                                "value": damage_bonus_value
-                            }
-                        else:
-                            # 闪避/移动力是整数，直接作为阈值
-                            check_threshold = derived_value
-
-                    # 子模式3：自定义技能
                     else:
-                        check_threshold = user_char.get(attr_name, 0)
                         attr_type = "自定义技能"
 
-                    # 验证值有效性（伤害加值允许0/负数，其他属性需1-200）
-                    if attr_name != "伤害加值" and (not isinstance(check_threshold, int) or check_threshold < 1 or check_threshold > 200):
+                    # 验证值有效性
+                    if not isinstance(check_threshold, int) or check_threshold < 1 or check_threshold > 200:
                         error_msg = f"❌ 「{attr_name}」值异常（{check_threshold}），无法检定！"
                         await self.send_text(error_msg)
                         return False, error_msg, True
@@ -800,40 +810,35 @@ class CoCDiceCommand(BaseCommand):
 
                 # 构建提示信息
                 reason_desc = f"因为{reason}所以进行" if reason else "进行"
-                if attr_name == "伤害加值" and damage_bonus_info:
-                    # 伤害加值专用模板
-                    damage_bonus_data = {
-                        "reason_desc": reason_desc,
-                        "damage_bonus_expr": damage_bonus_info["expr"],
-                        "damage_bonus_value": damage_bonus_info["value"],
-                        "roll_result": total,
-                        "judge_result": judge_result
-                    }
-                    msg = render_template(config["dice"]["damage_bonus_check_template"], damage_bonus_data)
-                elif attr_name:
-                    # 其他属性/技能检定提示
-                    check_template = f"""🎲 {attr_type}-{attr_name}检定（阈值：{{阈值}}）
+                if attr_name:
+                    # 属性/技能检定提示（含修正值展示）
+                    if modifier != 0:
+                        # 有修正值的情况，显示基础值+修正值=最终阈值
+                        check_template = f"""🎲 {attr_type}-{attr_name}检定
 {reason_desc}「{attr_name}」{attr_type}检定
-你的{attr_name}{attr_type}值：{{阈值}}
-投掷结果：{{投掷结果}}
-{{判定结果}}
+🔹 {attr_name}基础值：{base_value}
+🔹 修正值：{modifier}
+🔹 最终检定阈值：{check_threshold}
+投掷结果：{total}
+{judge_result}
 """
-                    check_data = {
-                        "阈值": check_threshold,
-                        "reason_desc": reason_desc,
-                        "投掷结果": total,
-                        "判定结果": judge_result
-                    }
-                    msg = render_template(check_template, check_data)
+                        msg = check_template
+                    else:
+                        # 无修正值的情况（原有逻辑）
+                        check_template = f"""🎲 {attr_type}-{attr_name}检定（阈值：{check_threshold}）
+{reason_desc}「{attr_name}」{attr_type}检定
+你的{attr_name}{attr_type}值：{check_threshold}
+投掷结果：{total}
+{judge_result}
+"""
+                        msg = check_template
                 else:
-                    # 阈值检定提示
-                    check_data = {
-                        "阈值": check_threshold,
-                        "reason_desc": f"{reason_desc}D100检定",
-                        "投掷结果": total,
-                        "判定结果": judge_result
-                    }
-                    msg = render_template(config["dice"]["check_template"], check_data)
+                    # 阈值检定提示（原有逻辑）
+                    check_template = f"""🎲 克苏鲁检定（阈值：{check_threshold}）
+{reason_desc}D100检定
+投掷结果：{total}
+{judge_result}"""
+                    msg = check_template
 
                 await self.send_text(msg)
                 return True, msg, True
@@ -843,7 +848,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 3. 新增：处理/san检定指令 ==========
+        # ========== 3. 处理/san检定指令 ==========
         elif cmd_prefix == "san检定":
             # 拆分参数：扣除规则 + 原因
             if not params.strip():
@@ -852,7 +857,7 @@ class CoCDiceCommand(BaseCommand):
 规则：
 - 结果 < SAN值：检定成功，扣除「成功扣除」值
 - 结果 > SAN值：检定失败，扣除「失败扣除」值
-"""
+- SAN值最低为0，不会出现负数"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -908,8 +913,8 @@ class CoCDiceCommand(BaseCommand):
                 after_san = max(before_san - deduct_value, 0)
                 user_char["SAN"] = after_san
 
-                # 重新计算基础总值（不影响，仅更新SAN值）
-                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+                # 重新计算基础总值
+                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
                 user_char["基础总属性"] = base_total
 
                 # 保存修改后的角色数据
@@ -943,10 +948,9 @@ class CoCDiceCommand(BaseCommand):
             attr_name = params.strip()
             if not attr_name:
                 error_msg = """❌ 缺少属性/技能名参数！
-用法：/删除 [属性/技能名]（如/删除 力量、/删除 感知）
-- 基础属性：重置为默认值
-- 自定义技能：直接删除
-⚠️ 伤害加值、闪避、移动力为自动计算属性，不可手动删除/修改"""
+用法：/删除 [属性/技能名]（如/删除 力量、/删除 伤害加值）
+- 基础属性（含伤害加值/闪避/移动力）：重置为默认值
+- 自定义技能：直接删除"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -954,7 +958,7 @@ class CoCDiceCommand(BaseCommand):
                 success, op_desc, user_char = delete_character_attribute(user_id, attr_name)
 
                 if success:
-                    base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys() if short not in ["HP", "MP", "SAN"]])
+                    base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
                     USER_CHARACTER_DATA[user_id] = user_char
                     save_character_data(USER_CHARACTER_DATA)
                     delete_data = {
@@ -1014,19 +1018,9 @@ class CoCDiceCommand(BaseCommand):
                     base_attr_lines.append(f"🔹 {full_name}：{attr_data.get(short_name, 0)}")
                 base_attr_str = "\n".join(base_attr_lines)
 
-                # 计算衍生属性（仅输出结果）
-                str_val = attr_data.get("STR", 0)
-                siz_val = attr_data.get("SIZ", 0)
-                dex_val = attr_data.get("DEX", 0)
-                derived_info = f"""
-衍生属性（自动计算，不可手动修改）：
-🔹 {DERIVED_ATTRS['伤害加值']}：{calculate_damage_bonus(str_val, siz_val)}
-🔹 {DERIVED_ATTRS['闪避']}：{calculate_dodge(dex_val)}
-🔹 {DERIVED_ATTRS['移动力']}：{calculate_movement(dex_val, str_val, siz_val)}"""
-
-                role_data = {"属性列表": base_attr_str + derived_info, "总属性": attr_data["基础总属性"]}
+                role_data = {"属性列表": base_attr_str, "总属性": attr_data["基础总属性"]}
                 role_msg = render_template(config["character"]["output_template"], role_data)
-                role_msg += "\n\n✅ 角色创建成功！/st可新增技能，/查询角色查看完整属性，/查询技能查看技能列表。"
+                role_msg += "\n\n✅ 角色创建成功！/st可新增/修改技能，/查询角色查看完整属性，。"
 
                 await self.send_text(role_msg)
                 return True, role_msg, True
@@ -1066,7 +1060,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 8. 处理/查询技能指令（新增单个查询逻辑） ==========
+        # ========== 8. 处理/查询技能指令 ==========
         elif cmd_prefix == "查询技能":
             skill_name = params.strip()
             
@@ -1091,7 +1085,7 @@ class CoCDiceCommand(BaseCommand):
                         await self.send_text(single_msg)
                         return True, single_msg, True
                     else:
-                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。"
+                        error_msg = f"❌ 未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。\n"
                         await self.send_text(error_msg)
                         return False, error_msg, True
                 # 无参数：查询所有技能
@@ -1099,7 +1093,7 @@ class CoCDiceCommand(BaseCommand):
                     skill_lines, skill_count = get_character_skills(char_data)
                     
                     if not skill_lines:
-                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 力量80 感知75）"
+                        skill_list = "暂无自定义技能（可通过/st指令添加，如/st 力量80 伤害加值1d4）\n"
                     else:
                         skill_list = "\n".join(skill_lines)
 
@@ -1193,10 +1187,9 @@ class CoCDicePlugin(BasePlugin):
             "show_detail": ConfigField(type=bool, default=True, description="显示投掷详情"),
             "success_threshold": ConfigField(type=int, default=5, description="D100大成功阈值"),
             "fail_threshold": ConfigField(type=int, default=96, description="D100大失败阈值"),
-            "default_message": ConfigField(type=str, default="🎲 克苏鲁骰子投掷完成！", description="默认提示"),
+            "default_message": ConfigField(type=str, default="🎲 骰子投掷完成！", description="默认提示"),
             "roll_template": ConfigField(type=str, default=get_plugin_config()["dice"]["roll_template"], description="掷骰模板"),
             "check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["check_template"], description="检定模板"),
-            "damage_bonus_check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["damage_bonus_check_template"], description="伤害加值检定专用模板"),
             "san_check_template": ConfigField(type=str, default=get_plugin_config()["dice"]["san_check_template"], description="SAN值检定专用模板")
         },
         "character": {
