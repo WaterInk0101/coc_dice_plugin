@@ -46,8 +46,8 @@ def save_character_data(char_data: Dict[str, Dict[str, Any]]) -> bool:
 
 USER_CHARACTER_DATA = load_character_data()
 
-# ===================== 预设属性映射 =====================
-# 基础属性（含HP/MP/SAN + 伤害加值/闪避/移动力）
+# ===================== 预设属性映射（新增核心属性分类） =====================
+# 基础属性映射（含HP/MP/SAN + 伤害加值/闪避/移动力）
 BASE_ATTR_MAP = {
     "生命": ("HP", "❤️生命(HP)"),
     "魔力": ("MP", "🧪魔力(MP)"),
@@ -65,6 +65,12 @@ BASE_ATTR_MAP = {
     "闪避": ("DODGE", "🤸闪避(DODGE)"),
     "移动力": ("MOV", "⚡移动力(MOV)")
 }
+
+# 新增：核心基础属性缩写（计入总属性）
+CORE_BASE_ATTR_SHORTS = ["STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "LUCK"]
+# 新增：自动计算属性缩写（不计入总属性）
+AUTO_CALC_ATTR_SHORTS = ["HP", "MP", "SAN", "DB", "DODGE", "MOV"]
+
 DERIVED_ATTRS = {}
 FORBIDDEN_ATTRS = set()
 
@@ -72,7 +78,7 @@ BASE_ATTR_NAMES = set(BASE_ATTR_MAP.keys())
 BASE_ATTR_TO_SHORT = {name: short for name, (short, full) in BASE_ATTR_MAP.items()}
 SHORT_TO_BASE_ATTR = {short: name for name, (short, full) in BASE_ATTR_MAP.items()}
 
-# ===================== 快捷指令映射（新增改名指令） =====================
+# ===================== 快捷指令映射 =====================
 SHORT_CMD_MAP = {
     "r": "掷骰",
     "rd": "检定",
@@ -81,7 +87,7 @@ SHORT_CMD_MAP = {
     "del_all": "删除角色",
     "qs": "查询技能",
     "sc": "san检定",
-    "nn": "改名"  # 新增：nn对应改名
+    "nn": "改名"
 }
 
 # ===================== 配置文件相关 =====================
@@ -118,22 +124,18 @@ D100投掷结果：{roll_result}
         "character": {
             "output_template": """🎭 {nickname}的角色属性：
 {属性列表}
-📊 预设属性总值：{总属性}
-💡 支持导入自定义属性（如/导入 力量80 感知75）
+📊 核心基础属性总值：{总属性}
 """,
             "query_template": """🎭 {nickname}的绑定角色属性：
 {基础属性列表}
-📊 基础属性总数：{基础总属性}
-💡 发送「/查询技能」查看所有技能，/rd [属性/技能名] 可检定任意项
+📊 核心基础属性总数：{基础总属性}
 """,
             "skill_query_template": """🎭 {nickname}的角色技能列表：
 {技能列表}
 📊 技能总数：{skill_count}
-💡 发送「/查询角色」查看属性，/rd [技能名] 可检定该技能/属性
 """,
             "single_skill_template": """🎭 {nickname}的角色技能/属性查询结果：
 🔹 {skill_name}：{skill_value}
-💡 发送「/查询技能」查看所有技能，/rd {skill_name} 可检定该技能/属性
 """
         },
         "import_attr": {
@@ -141,8 +143,7 @@ D100投掷结果：{roll_result}
 {自动创建提示}
 修改/新增的属性：
 {修改列表}
-📊 当前基础属性总值：{基础总属性}
-💡 发送「/查询角色」查看完整属性，/查询技能 查看技能
+📊 当前核心基础属性总值：{基础总属性}
 """,
             "auto_create_tip": "🔔 检测到你未创建角色，已自动生成预设属性并新增/覆盖指定值！",
             "update_tip": "🔔 已新增/覆盖你指定的属性值！",
@@ -155,8 +156,7 @@ D100投掷结果：{roll_result}
         "delete_attr": {
             "success_template": """✅ {nickname}的角色属性操作成功！
 {操作描述}
-📊 当前基础属性总值：{基础总属性}
-💡 发送「/查询角色」查看最新属性，/查询技能 查看技能
+📊 当前核心基础属性总值：{基础总属性}
 """,
             "delete_role_template": """✅ {nickname}的角色已删除成功！
 你的所有角色数据已清空，可发送「/创建角色」重新生成。""",
@@ -169,7 +169,7 @@ D100投掷结果：{roll_result}
         },
         "rename": {
             "success_template": """✅ {old_nickname}的角色已成功改名为「{new_nickname}」！
-💡 发送「/查询角色」查看改名后的角色信息""",
+""",
             "error_template": """❌ 角色改名失败：
 {错误原因}
 💡 正确格式：/nn [新昵称]（如/nn 冒险者小明）"""
@@ -349,32 +349,32 @@ def calculate_movement(dex_value: int, str_value: int, siz_value: int) -> int:
     else:
         return 8
 
-# ===================== 角色属性生成/格式化 =====================
+# ===================== 角色属性生成/格式化（核心修改） =====================
 def generate_character_attributes(nickname: str) -> Dict[str, Any]:
-    """生成预设基础属性（包含昵称）"""
+    """生成预设基础属性（包含昵称，仅核心属性计入总值）"""
     attr_results = {}
     
-    # 新增：角色昵称
+    # 角色昵称
     attr_results["昵称"] = nickname
     
-    # HP/MP/SAN默认值
+    # HP/MP/SAN默认值（不计入总值）
     attr_results["HP"] = 12
     attr_results["MP"] = 10
     attr_results["SAN"] = 50
     
-    # 常规公式：3d6×5
+    # 常规公式：3d6×5（核心基础属性）
     normal_attrs = ["STR", "CON", "DEX", "APP", "POW", "LUCK"]
     for short in normal_attrs:
         rolls, sum_3d6 = roll_dice(3, 6)
         attr_results[short] = sum_3d6 * 5
     
-    # SIZ/INT/EDU公式为(2D6+6)×5
+    # SIZ/INT/EDU公式为(2D6+6)×5（核心基础属性）
     special_attrs = ["SIZ", "INT", "EDU"]
     for short in special_attrs:
         rolls, sum_2d6 = roll_dice(2, 6)
         attr_results[short] = (sum_2d6 + 6) * 5
     
-    # 计算新增基础属性的初始值
+    # 计算自动计算属性（不计入总值）
     str_val = attr_results["STR"]
     siz_val = attr_results["SIZ"]
     dex_val = attr_results["DEX"]
@@ -383,8 +383,8 @@ def generate_character_attributes(nickname: str) -> Dict[str, Any]:
     attr_results["DODGE"] = calculate_dodge(dex_val)
     attr_results["MOV"] = calculate_movement(dex_val, str_val, siz_val)
     
-    # 计算基础属性总值
-    base_total = sum([attr_results[short] for short in SHORT_TO_BASE_ATTR.keys()])
+    # 核心修改：仅计算核心基础属性的总和
+    base_total = sum([attr_results[short] for short in CORE_BASE_ATTR_SHORTS])
     attr_results["基础总属性"] = base_total
     return attr_results
 
@@ -422,13 +422,17 @@ def generate_single_base_attr(attr_name: str) -> int:
     return 0
 
 def format_character_attributes(char_data: Dict[str, Any]) -> Tuple[str, str, int, Dict[str, str]]:
-    """格式化角色属性"""
+    """格式化角色属性（核心修改：仅核心属性计入总值）"""
     base_attr_lines = []
+    # 核心修改：初始化base_total为0，仅累加核心基础属性
     base_total = 0
+    
     for attr_name, (short_name, full_name) in BASE_ATTR_MAP.items():
         value = char_data.get(short_name, 0)
         base_attr_lines.append(f"🔹 {full_name}：{value}")
-        base_total += value
+        # 仅核心基础属性计入总值
+        if short_name in CORE_BASE_ATTR_SHORTS:
+            base_total += value
     
     derived_attr_str = ""
     derived_attr_values = {}
@@ -463,9 +467,9 @@ def get_single_skill_value(skill_name: str, char_data: Dict[str, Any]) -> Tuple[
     
     return False, skill_name, None
 
-# ===================== 删除属性/角色核心函数 =====================
+# ===================== 删除属性/角色核心函数（核心修改） =====================
 def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str, Dict[str, Any]]:
-    """删除/重置角色属性/技能"""
+    """删除/重置角色属性/技能（核心修改：重新计算总属性时仅算核心属性）"""
     if user_id not in USER_CHARACTER_DATA:
         return False, "你还未创建角色，无属性/技能可删除！", {}
 
@@ -477,7 +481,8 @@ def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str,
         new_value = generate_single_base_attr(attr_name)
         user_char[short_name] = new_value
 
-        base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
+        # 核心修改：仅计算核心基础属性的总和
+        base_total = sum([user_char.get(short, 0) for short in CORE_BASE_ATTR_SHORTS])
         user_char["基础总属性"] = base_total
 
         return True, f"基础属性-{attr_name}已重置为默认值：{old_value} → {new_value}", user_char
@@ -486,7 +491,8 @@ def delete_character_attribute(user_id: str, attr_name: str) -> Tuple[bool, str,
         old_value = user_char[attr_name]
         del user_char[attr_name]
 
-        base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
+        # 核心修改：仅计算核心基础属性的总和
+        base_total = sum([user_char.get(short, 0) for short in CORE_BASE_ATTR_SHORTS])
         user_char["基础总属性"] = base_total
 
         return True, f"技能-{attr_name}已删除（原值：{old_value}）", user_char
@@ -618,7 +624,8 @@ class CoCDiceCommand(BaseCommand):
 9. /删除角色/ del_all → 删除整个角色数据（所有属性+技能清空）
 10. /nn [新昵称] → 修改角色昵称（如/nn 勇者小刚）
 支持的基础属性：{', '.join(BASE_ATTR_NAMES)}
-所有基础属性均可手动修改（包括伤害加值/闪避/移动力）"""
+⚠️ 生命/魔力/理智/伤害加值/闪避/移动力为自动计算属性，不计入总属性值
+"""
 
     command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|sc|san检定|nn|改名)(\s+.*)?$"
 
@@ -654,7 +661,7 @@ class CoCDiceCommand(BaseCommand):
         # 获取角色昵称（用于输出）
         nickname = get_character_nickname(user_id, user_nickname)
 
-        # ========== 0. 处理/改名指令（新增） ==========
+        # ========== 0. 处理/改名指令 ==========
         if cmd_prefix == "改名":
             new_nickname = params.strip()
             try:
@@ -704,7 +711,8 @@ class CoCDiceCommand(BaseCommand):
                         user_char[attr_name] = attr_value
                         modified_attrs.append(f"🔹 技能-{attr_name}：{old_value} → {attr_value}")
 
-                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
+                # 核心修改：仅计算核心基础属性的总和
+                base_total = sum([user_char.get(short, 0) for short in CORE_BASE_ATTR_SHORTS])
                 user_char["基础总属性"] = base_total
 
                 USER_CHARACTER_DATA[user_id] = user_char
@@ -739,7 +747,8 @@ class CoCDiceCommand(BaseCommand):
 1. /rd [阈值] [原因]（如/rd 70 躲避陷阱）
 2. /rd [属性/技能名] [原因]（如/rd 力量、/rd 伤害加值）
 3. /rd [属性+修正值] [原因]（如/rd 力量+10、/rd 伤害加值-5）
-"""
+
+⚠️ 生命/魔力/理智/伤害加值/闪避/移动力为自动计算属性，不计入总属性值"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -779,15 +788,15 @@ class CoCDiceCommand(BaseCommand):
                     check_threshold = base_value + modifier
                     attr_type = "基础属性" if attr_name in BASE_ATTR_NAMES else "自定义技能"
                     
-                    if check_threshold < 1 or check_threshold > 199:
-                        error_msg = f"❌ {nickname}的「{attr_name}」基础值{base_value}{modifier_str}={check_threshold}，超出检定阈值范围（1-199）！"
+                    if check_threshold < 0 or check_threshold > 199:
+                        error_msg = f"❌ {nickname}的「{attr_name}」基础值{base_value}{modifier_str}={check_threshold}，超出检定阈值范围（0-199）！"
                         await self.send_text(error_msg)
                         return False, error_msg, True
 
                 elif first_param.isdigit():
                     check_threshold = int(first_param)
                     attr_type = "阈值"
-                    if check_threshold < 1 or check_threshold > 199:
+                    if check_threshold < 0 or check_threshold > 199:
                         error_msg = f"❌ {nickname}的检定阈值范围必须是1-199！"
                         await self.send_text(error_msg)
                         return False, error_msg, True
@@ -808,7 +817,7 @@ class CoCDiceCommand(BaseCommand):
                     check_threshold = base_value
                     attr_type = "基础属性" if attr_name in BASE_ATTR_NAMES else "自定义技能"
 
-                    if not isinstance(check_threshold, int) or check_threshold < 1 or check_threshold > 200:
+                    if not isinstance(check_threshold, int) or check_threshold < 0 or check_threshold > 200:
                         error_msg = f"❌ {nickname}的「{attr_name}」值异常（{check_threshold}），无法检定！"
                         await self.send_text(error_msg)
                         return False, error_msg, True
@@ -829,7 +838,7 @@ class CoCDiceCommand(BaseCommand):
                 reason_desc = f"{nickname}因为{reason}所以进行" if reason else f"{nickname}进行"
                 if attr_name:
                     if modifier != 0:
-                        check_template = f"""🎲 {attr_type}-{attr_name}检定
+                        check_template = f"""🎲 {attr_type}-{attr_name}检定（修正后阈值：{check_threshold}）
 {reason_desc}「{attr_name}」{attr_type}检定
 🔹 {attr_name}基础值：{base_value}
 🔹 修正值：{modifier}
@@ -872,7 +881,7 @@ class CoCDiceCommand(BaseCommand):
 规则：
 - 结果 < SAN值：检定成功，扣除「成功扣除」值
 - 结果 > SAN值：检定失败，扣除「失败扣除」值
-- SAN值最低为0，不会出现负数"""
+"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -881,7 +890,8 @@ class CoCDiceCommand(BaseCommand):
                 error_msg = f"""❌ {nickname}的SAN检定参数格式错误！
 正确格式：/sc 成功扣除/失败扣除 [原因]（如/sc 1d5/1d6 目睹怪物、/sc 5/6 看到诡异场景）
 - 成功扣除：检定成功时扣除的SAN值（支持骰子表达式/纯数字）
-- 失败扣除：检定失败时扣除的SAN值（支持骰子表达式/纯数字）"""
+- 失败扣除：检定失败时扣除的SAN值（支持骰子表达式/纯数字）
+"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -920,7 +930,8 @@ class CoCDiceCommand(BaseCommand):
                 after_san = max(before_san - deduct_value, 0)
                 user_char["SAN"] = after_san
 
-                base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
+                # 核心修改：仅计算核心基础属性的总和
+                base_total = sum([user_char.get(short, 0) for short in CORE_BASE_ATTR_SHORTS])
                 user_char["基础总属性"] = base_total
 
                 USER_CHARACTER_DATA[user_id] = user_char
@@ -955,7 +966,8 @@ class CoCDiceCommand(BaseCommand):
                 error_msg = f"""❌ {nickname}的属性删除缺少参数！
 用法：/删除 [属性/技能名]（如/删除 力量、/删除 伤害加值）
 - 基础属性（含伤害加值/闪避/移动力）：重置为默认值
-- 自定义技能：直接删除"""
+- 自定义技能：直接删除
+"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
@@ -963,7 +975,7 @@ class CoCDiceCommand(BaseCommand):
                 success, op_desc, user_char = delete_character_attribute(user_id, attr_name)
 
                 if success:
-                    base_total = sum([user_char.get(short, 0) for short in SHORT_TO_BASE_ATTR.keys()])
+                    base_total = sum([user_char.get(short, 0) for short in CORE_BASE_ATTR_SHORTS])
                     USER_CHARACTER_DATA[user_id] = user_char
                     save_character_data(USER_CHARACTER_DATA)
                     delete_data = {
@@ -1008,7 +1020,7 @@ class CoCDiceCommand(BaseCommand):
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
-        # ========== 6. 处理/创建角色指令（支持昵称参数） ==========
+        # ========== 6. 处理/创建角色指令 ==========
         elif cmd_prefix == "创建角色":
             # 解析角色昵称参数（有则用，无则用用户昵称）
             role_nickname = params.strip() if params.strip() else user_nickname
@@ -1030,7 +1042,7 @@ class CoCDiceCommand(BaseCommand):
                     "总属性": attr_data["基础总属性"]
                 }
                 role_msg = render_template(config["character"]["output_template"], role_data)
-                role_msg += f"\n\n✅ {nickname}的角色创建成功！/st可新增/修改技能，/查询角色查看完整属性，。"
+                role_msg += f"\n✅ {nickname}的角色创建成功！/st可新增/修改技能，/查询角色查看完整属性"
 
                 await self.send_text(role_msg)
                 return True, role_msg, True
@@ -1095,7 +1107,7 @@ class CoCDiceCommand(BaseCommand):
                         await self.send_text(single_msg)
                         return True, single_msg, True
                     else:
-                        error_msg = f"❌ {nickname}未找到技能/属性「{skill_name}」！\n💡 发送「/查询技能」查看所有技能，/查询角色查看所有属性。\n"
+                        error_msg = f"❌ {nickname}未找到技能/属性「{skill_name}」！"
                         await self.send_text(error_msg)
                         return False, error_msg, True
                 else:
@@ -1187,7 +1199,7 @@ class CoCDicePlugin(BasePlugin):
         "character": "角色配置",
         "import_attr": "属性导入配置",
         "delete_attr": "属性删除配置",
-        "rename": "角色改名配置"  # 新增
+        "rename": "角色改名配置"
     }
 
     config_schema: dict = {
@@ -1221,7 +1233,7 @@ class CoCDicePlugin(BasePlugin):
             "delete_role_template": ConfigField(type=str, default=get_plugin_config()["delete_attr"]["delete_role_template"], description="删除角色成功模板"),
             "error_template": ConfigField(type=str, default=get_plugin_config()["delete_attr"]["error_template"], description="删除属性错误模板")
         },
-        "rename": {  # 新增
+        "rename": {
             "success_template": ConfigField(type=str, default=get_plugin_config()["rename"]["success_template"], description="改名成功模板"),
             "error_template": ConfigField(type=str, default=get_plugin_config()["rename"]["error_template"], description="改名错误模板")
         }
