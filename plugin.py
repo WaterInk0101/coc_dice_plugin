@@ -66,6 +66,36 @@ BASE_ATTR_MAP = {
     "移动力": ("MOV", "⚡移动力(MOV)")
 }
 
+# 属性/技能别名映射表
+ATTR_ALIAS_MAP = {
+    # 基础属性
+    "str": "力量", "💪力量(str)": "力量",
+    "con": "体质", "🛡️体质(con)": "体质",
+    "siz": "体型", "📏体型(siz)": "体型",
+    "dex": "敏捷", "🏃敏捷(dex)": "敏捷",
+    "app": "外貌", "✨外貌(app)": "外貌",
+    "int": "智力", "灵感": "智力", "🧠智力(int)": "智力",
+    "pow": "意志", "🔮意志(pow)": "意志",
+    "edu": "教育", "📚教育(edu)": "教育",
+    "luck": "幸运", "运气": "幸运", "🍀幸运(luck)": "幸运",
+    # 自动计算项
+    "hp": "生命", "体力": "生命", "❤️生命(hp)": "生命",
+    "mp": "魔力", "魔法": "魔力", "🧪魔力(mp)": "魔力",
+    "san": "理智", "理智值": "理智", "san值": "理智", "🌀理智(san)": "理智",
+    "db": "伤害加值", "💥伤害加值(db)": "伤害加值",
+    "dodge": "闪避", "🤸闪避(dodge)": "闪避",
+    "mov": "移动力", "⚡移动力(mov)": "移动力",
+    # 常见技能别名
+    "计算机使用": "计算机", "电脑": "计算机",
+    "信誉": "信用", "信用评级": "信用",
+    "克苏鲁神话": "克苏鲁", "cm": "克苏鲁",
+    "汽车驾驶": "驾驶", "汽车": "驾驶",
+    "图书馆使用": "图书馆",
+    "撬锁": "开锁", "锁匠": "开锁",
+    "自然学": "博物学",
+    "重型机械": "重型操作", "操作重型机械": "重型操作", "重型": "重型操作",
+}
+
 # 新增：核心基础属性缩写（计入总属性）
 CORE_BASE_ATTR_SHORTS = ["STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "LUCK"]
 # 新增：自动计算属性缩写（不计入总属性）
@@ -236,43 +266,38 @@ def parse_import_attr_params(params: str) -> Dict[str, int]:
         raise ValueError("未输入任何属性参数")
 
     attr_dict = {}
-    param_parts = params.strip().split()
-    attr_pattern = re.compile(r'([^\d]+)([\d+-d]+)')
     
-    for part in param_parts:
-        remaining = part
-        while remaining:
-            match = attr_pattern.match(remaining)
-            if not match:
-                raise ValueError(f"属性格式错误：{part}（正确示例：力量80敏捷75 或 伤害加值1d4）")
-            
-            attr_name = match.group(1).strip()
-            value_str = match.group(2).strip()
-            remaining = remaining[match.end():]
-            
-            attr_value = 0
-            if attr_name == "伤害加值":
-                try:
-                    count, face, modifier = parse_dice_expression(value_str)
-                    rolls, total = roll_dice(count, face, modifier)
-                    attr_value = total
-                    logger.info(f"伤害加值表达式{value_str}解析为数值：{attr_value}")
-                except ValueError:
-                    if not value_str.lstrip('-').isdigit():
-                        raise ValueError(f"伤害加值格式错误：{value_str}（支持纯数字或骰子表达式，如5、1d4）")
-                    attr_value = int(value_str)
+    # 正则逻辑：
+    # ([^\d\s+-]+) -> 匹配非数字、非空格、非正负号的字符作为“键”
+    # ([\d+-]+(?:d\d+)?) -> 匹配数字或 1d6 这种骰子表达式作为“值”
+    pattern = re.compile(r'([^\d\s+-]+)\s*([\d+-]+(?:d\d+)?)')
+    matches = pattern.findall(params)
+    
+    if not matches:
+        raise ValueError("无法识别属性格式。正确示例：/st 力量60str60 或 伤害加值1d4")
+
+    for raw_name, value_str in matches:
+        # 1. 统一名称转换 (别名过滤)
+        attr_name = raw_name.strip().lower()
+        standard_name = ATTR_ALIAS_MAP.get(attr_name, raw_name.strip())
+
+        # 2. 解析数值
+        try:
+            if "d" in value_str.lower():
+                # 处理骰子表达式 (如 1d4, 2d6+3)
+                count, face, modifier = parse_dice_expression(value_str)
+                _, total = roll_dice(count, face, modifier)
+                attr_value = total
             else:
-                if not value_str.lstrip('-').isdigit():
-                    raise ValueError(f"属性值非法：{attr_name}{value_str}（必须是0-200的整数）")
+                # 纯数字解析
                 attr_value = int(value_str)
-            
-            if attr_value < 0 or attr_value > 200:
-                raise ValueError(f"属性值超出范围：{attr_name}{attr_value}（0-200）")
-            
-            attr_dict[attr_name] = attr_value
-    
-    if not attr_dict:
-        raise ValueError("未解析到有效的属性参数（正确示例：力量80敏捷75 或 伤害加值1d4）")
+        except Exception:
+            # 如果解析失败（比如 1d6 格式写错），跳过该项或报错
+            continue
+
+        # 3. 校验范围并存入字典 (同属性会被后面的覆盖，例如 str60 会覆盖 力量60)
+        attr_value = max(0, min(200, attr_value))
+        attr_dict[standard_name] = attr_value
     
     return attr_dict
 
@@ -747,8 +772,7 @@ class CoCDiceCommand(BaseCommand):
 1. /rd [阈值] [原因]（如/rd 70 躲避陷阱）
 2. /rd [属性/技能名] [原因]（如/rd 力量、/rd 伤害加值）
 3. /rd [属性+修正值] [原因]（如/rd 力量+10、/rd 伤害加值-5）
-
-⚠️ 生命/魔力/理智/伤害加值/闪避/移动力为自动计算属性，不计入总属性值"""
+"""
                 await self.send_text(error_msg)
                 return False, error_msg, True
 
