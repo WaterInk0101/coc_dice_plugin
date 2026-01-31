@@ -115,6 +115,7 @@ SHORT_CMD_MAP = {
     "st": "导入",
     "del": "删除",
     "del_all": "删除角色",
+    "qc": "查询角色",
     "qs": "查询技能",
     "sc": "san检定",
     "nn": "改名"
@@ -156,7 +157,7 @@ D100投掷结果：{roll_result}
 {属性列表}
 📊 核心基础属性总值：{总属性}
 """,
-            "query_template": """🎭 {nickname}的绑定角色属性：
+            "query_template": """🎭 {nickname}的角色属性：
 {基础属性列表}
 📊 核心基础属性总数：{基础总属性}
 """,
@@ -701,7 +702,7 @@ class CoCDiceCommand(BaseCommand):
 ⚠️ 生命/魔力/理智/伤害加值/闪避/移动力为自动计算属性，不计入总属性值
 """
 
-    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|sc|san检定|nn|改名)(\s+.*)?$"
+    command_pattern = r"^/(r|rd|st|导入|del|删除|del_all|删除角色|掷骰|检定|创建角色|查询角色|查询技能|qs|qc|sc|san检定|nn|改名)(\s+.*)?$"
 
     async def execute(self) -> Tuple[bool, str, bool]:
         global USER_CHARACTER_DATA
@@ -1124,7 +1125,7 @@ class CoCDiceCommand(BaseCommand):
                     "总属性": attr_data["基础总属性"]
                 }
                 role_msg = render_template(config["character"]["output_template"], role_data)
-                role_msg += f"\n✅ {nickname}的角色创建成功！/st可新增/修改技能，/查询角色查看完整属性"
+                role_msg += f"\n✅ {nickname}的角色创建成功！/st可新增/修改技能，/qc查看完整属性"
 
                 await self.send_text(role_msg)
                 return True, role_msg, True
