@@ -36,7 +36,7 @@ ___让麦麦来帮助你们的TRPG___
 
 1.下载或克隆本仓库
   ```bash
-  git colne https://github.com/WaterInk0101/coc_dice_plugin.git
+  git clone https://github.com/WaterInk0101/coc_dice_plugin.git
   ```
 2.将本插件文件放置到对应插件目录 `/plugins` 中
 
